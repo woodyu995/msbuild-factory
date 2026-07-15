@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.db.models import BuildEvent, BuildRequest, utcnow
 from app.domain.catalog import Catalog
 from app.domain.profile_resolver import ProfileRejected
+from app.domain.git_resolve import GitResolveError, resolve_git_ref
 from app.domain.project_validation import (
     InvalidProjectInput,
     validate_repository,
@@ -63,9 +64,8 @@ def create_build_request(
 
     repository = validate_repository(project["repository"])
     solution_path = validate_solution_path(project["solutionPath"])
-
     git_ref = project["gitRef"]
-    resolved_commit = git_ref if len(git_ref) >= 40 else f"resolved:{git_ref}"
+    resolved_commit, commit_resolution = resolve_git_ref(git_ref)
 
     request = BuildRequest(
         id=_new_request_id(),
@@ -86,7 +86,13 @@ def create_build_request(
     )
     session.add(request)
     session.flush()
-    append_event(session, request.id, "REQUESTED", "Build request accepted")
+    append_event(
+        session,
+        request.id,
+        "REQUESTED",
+        "Build request accepted",
+        {"commitResolution": commit_resolution, "resolvedCommit": resolved_commit},
+    )
 
     request.status = "VALIDATING_PROFILE"
     append_event(session, request.id, "VALIDATING_PROFILE", "Validating profile against catalog")

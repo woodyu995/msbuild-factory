@@ -18,6 +18,7 @@ from app.api.schemas import (
 )
 from app.domain.profile_resolver import ProfileRejected
 from app.domain.project_validation import InvalidProjectInput
+from app.domain.git_resolve import GitResolveError
 from app.security.hmac_auth import CallbackAuthError, verify_hmac
 from app.services.build_requests import (
     apply_build_event_callback,
@@ -238,7 +239,7 @@ def create_request(
         )
     except ProfileRejected as exc:
         raise HTTPException(status_code=400, detail={"code": exc.code, "message": exc.message}) from exc
-    except InvalidProjectInput as exc:
+    except (InvalidProjectInput, GitResolveError) as exc:
         raise HTTPException(status_code=400, detail={"code": exc.code, "message": exc.message}) from exc
 
     maybe_schedule_auto_advance(
