@@ -39,6 +39,10 @@
 | Medium | factory-artifacts unbound to lease | `leaseId` required + active CREATING/VALIDATING check |
 | Medium | Lease CAS ignored expiry | Status/heartbeat/artifacts reject expired leases |
 | Medium | Bearer length mismatch 500 | Length-safe token compare → 401 |
+| Medium | Idempotency ignores payload | Fingerprint + 409 on conflict |
+| Medium | Global factory slot race | `factory_control` singleton `FOR UPDATE` |
+| Medium | `require_auth` create-only | Applied to all `/api/v1/*` routes |
+| Medium | No reconcile cron | `portal-lease-reconcile` Jenkins job |
 
 ## Still external / ops-owned
 
@@ -47,4 +51,5 @@
 3. Factory host: layouts/installers + Registry push ACL
 4. Corporate SSO in front of Portal (tokens are service-account bridge until then)
 5. Set `PORTAL_ALLOW_INSECURE_DEFAULTS=false` and strong HMAC in prod
-6. Local simulate UI: set `PORTAL_DEFAULT_ACTOR_ROLES=operator` or use operator Bearer token
+6. Local Simulate UI: operator Bearer token (UI token field) or `PORTAL_DEFAULT_ACTOR_ROLES=operator`
+7. Real Windows Docker / K8s smoke on factory + worker pools
