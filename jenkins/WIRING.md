@@ -7,6 +7,8 @@
 | `portal-base-url` | Secret text | Factory/Project Jenkinsfiles |
 | `portal-callback-hmac` | Secret text | Agent HMAC callbacks |
 | `portal-jenkins-api` | Username/password | Portal `HttpJenkinsClient` |
+| `git-url-template` | Secret text | Project checkout (`https://git/{repository}.git`) |
+| `nuget-internal-feed-url` | Secret text | Windows NuGet restore |
 
 Portal env must match:
 
@@ -15,6 +17,11 @@ PORTAL_CALLBACK_HMAC_SECRET=...
 PORTAL_JENKINS_URL=https://jenkins.internal/
 PORTAL_JENKINS_USERNAME=portal-bot
 PORTAL_JENKINS_API_TOKEN=...
+PORTAL_GIT_RESOLVE_MODE=ls_remote
+PORTAL_GIT_URL_TEMPLATE=https://git.internal/{repository}.git
+PORTAL_GIT_REQUIRE_EXACT=true
+PORTAL_REQUIRE_AUTH=true
+PORTAL_API_TOKENS=name:token:role1|role2,...
 ```
 
 ## 2. Nodes / clouds
@@ -45,5 +52,8 @@ Seed from `jenkins/README.md` Job DSL, or create Pipeline jobs pointing at:
 2. Apply `k8s/windows/rbac.yaml` + pull secret
 3. Label Windows node pools
 4. Set Portal `PORTAL_JENKINS_*`
-5. Disable `PORTAL_SIMULATE_WORKERS`
-6. Set `FACTORY_DRY_RUN=0` on factory host
+5. Set Portal git resolve to `ls_remote` or `http_api` and `PORTAL_GIT_REQUIRE_EXACT=true`
+6. Set `PORTAL_REQUIRE_AUTH=true` + `PORTAL_API_TOKENS`
+7. Disable `PORTAL_SIMULATE_WORKERS`
+8. Set `FACTORY_DRY_RUN=0` on factory host
+9. Create Jenkins credentials `git-url-template` and `nuget-internal-feed-url`

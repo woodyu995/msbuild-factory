@@ -2,7 +2,8 @@
 /**
  * msbuild-project-build
  *
- * Uses Portal /pod-template YAML as the Kubernetes agent definition.
+ * Uses Portal /pod-template YAML and Windows helper scripts for checkout/restore/msbuild.
+ * Scripts are read from this repo on the controller/agent, then written into the Windows pod workspace.
  */
 pipeline {
   agent { label 'linux || built-in' }
@@ -19,6 +20,8 @@ pipeline {
   environment {
     PORTAL_BASE_URL = credentials('portal-base-url')
     PORTAL_HMAC_SECRET = credentials('portal-callback-hmac')
+    GIT_URL_TEMPLATE = credentials('git-url-template')
+    NUGET_INTERNAL_FEED = credentials('nuget-internal-feed-url')
   }
 
   stages {
@@ -43,6 +46,18 @@ pipeline {
           if (!meta.imageDigest) {
             error("Portal request ${params.BUILD_REQUEST_ID} has no imageDigest yet")
           }
+          if ((meta.resolvedCommit ?: '').startsWith('resolved:')) {
+            error("Commit not exactly resolved (${meta.resolvedCommit}). Configure Portal git resolve mode.")
+          }
+          if (!(meta.resolvedCommit ?: '').matches(/^[0-9a-fA-F]{40}$/)) {
+            error("resolvedCommit must be a 40-char SHA: ${meta.resolvedCommit}")
+          }
+
+          // Load Windows tools from SCM (this job's checkout) before entering the Windows pod.
+          def checkoutPs1 = readFile('jenkins/shared-library/scripts/windows/Checkout-Commit.ps1')
+          def restorePs1 = readFile('jenkins/shared-library/scripts/windows/Restore-NuGet.ps1')
+          def msbuildPs1 = readFile('jenkins/shared-library/scripts/windows/Invoke-MSBuild.ps1')
+          def projectAgent = readFile('jenkins/shared-library/scripts/portal_project_agent.py')
 
           def podYaml = sh(
             returnStdout: true,
@@ -54,8 +69,6 @@ pipeline {
                 --format yaml
             """
           ).trim()
-
-          // Keep builder container alive for the Kubernetes plugin.
           if (!podYaml.contains('Start-Sleep')) {
             podYaml = podYaml.replaceFirst(
               /(?m)^(\\s*)name:\\s*builder\\s*$/,
@@ -72,6 +85,11 @@ pipeline {
           podTemplate(yaml: podYaml) {
             node(POD_LABEL) {
               container('builder') {
+                writeFile file: 'portal-tools/windows/Checkout-Commit.ps1', text: checkoutPs1
+                writeFile file: 'portal-tools/windows/Restore-NuGet.ps1', text: restorePs1
+                writeFile file: 'portal-tools/windows/Invoke-MSBuild.ps1', text: msbuildPs1
+                writeFile file: 'portal-tools/portal_project_agent.py', text: projectAgent
+
                 withEnv([
                   "REPO=${meta.repository}",
                   "COMMIT=${meta.resolvedCommit}",
@@ -81,7 +99,12 @@ pipeline {
                   "NUGET_MODE=${meta.nugetMode ?: 'repo-packages-and-internal-feed'}",
                 ]) {
                   powershell '''
-                    python C:\\portal-tools\\portal_project_agent.py `
+                    $tools = Join-Path $env:WORKSPACE "portal-tools"
+                    if (-not (Test-Path $tools)) {
+                      $tools = "portal-tools"
+                    }
+
+                    python $tools\\portal_project_agent.py `
                       event `
                       --portal-url $env:PORTAL_BASE_URL `
                       --hmac-secret $env:PORTAL_HMAC_SECRET `
@@ -90,12 +113,25 @@ pipeline {
                       --message "Project build started" `
                       --build-number $env:BUILD_NUMBER
 
-                    Write-Host "Checkout" $env:REPO $env:COMMIT
-                    Write-Host "NuGet mode:" $env:NUGET_MODE
-                    Write-Host "MSBuild" $env:SOLUTION $env:CONFIGURATION $env:PLATFORM
-                    # TODO: real git checkout / nuget restore / msbuild
+                    powershell -File $tools\\windows\\Checkout-Commit.ps1 `
+                      -Repository $env:REPO `
+                      -Commit $env:COMMIT `
+                      -GitUrlTemplate $env:GIT_URL_TEMPLATE `
+                      -WorkDir C:\\workspace\\src
 
-                    python C:\\portal-tools\\portal_project_agent.py `
+                    powershell -File $tools\\windows\\Restore-NuGet.ps1 `
+                      -WorkDir C:\\workspace\\src `
+                      -SolutionPath $env:SOLUTION `
+                      -NugetMode $env:NUGET_MODE `
+                      -InternalFeedUrl $env:NUGET_INTERNAL_FEED
+
+                    powershell -File $tools\\windows\\Invoke-MSBuild.ps1 `
+                      -WorkDir C:\\workspace\\src `
+                      -SolutionPath $env:SOLUTION `
+                      -Configuration $env:CONFIGURATION `
+                      -Platform $env:PLATFORM
+
+                    python $tools\\portal_project_agent.py `
                       event `
                       --portal-url $env:PORTAL_BASE_URL `
                       --hmac-secret $env:PORTAL_HMAC_SECRET `
@@ -104,7 +140,7 @@ pipeline {
                       --message "Tests running" `
                       --build-number $env:BUILD_NUMBER
 
-                    python C:\\portal-tools\\portal_project_agent.py `
+                    python $tools\\portal_project_agent.py `
                       event `
                       --portal-url $env:PORTAL_BASE_URL `
                       --hmac-secret $env:PORTAL_HMAC_SECRET `
@@ -113,7 +149,7 @@ pipeline {
                       --message "Publishing artifacts" `
                       --build-number $env:BUILD_NUMBER
 
-                    python C:\\portal-tools\\portal_project_agent.py `
+                    python $tools\\portal_project_agent.py `
                       event `
                       --portal-url $env:PORTAL_BASE_URL `
                       --hmac-secret $env:PORTAL_HMAC_SECRET `

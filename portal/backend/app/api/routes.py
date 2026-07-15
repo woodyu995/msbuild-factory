@@ -65,11 +65,34 @@ def get_settings(request: Request):
 def actor_from_headers(
     request: Request,
     x_actor: Annotated[str | None, Header()] = None,
-) -> str:
+    authorization: Annotated[str | None, Header()] = None,
+):
+    from app.security.actors import (
+        Actor,
+        constant_time_token_lookup,
+        extract_bearer,
+        parse_api_tokens,
+    )
+
     settings = request.app.state.settings
-    if settings.require_auth and not x_actor:
-        raise HTTPException(status_code=401, detail="authentication required")
-    return x_actor or settings.default_actor
+    tokens = parse_api_tokens(settings.api_tokens)
+    bearer = extract_bearer(authorization)
+    if bearer:
+        if not tokens:
+            raise HTTPException(
+                status_code=401,
+                detail="Bearer provided but PORTAL_API_TOKENS is not configured",
+            )
+        actor = constant_time_token_lookup(tokens, bearer)
+        if actor is None:
+            raise HTTPException(status_code=401, detail="invalid API token")
+        return actor
+    if settings.require_auth:
+        raise HTTPException(status_code=401, detail="Bearer token required")
+    roles = frozenset(
+        r.strip() for r in (settings.default_actor_roles or "builder").split(",") if r.strip()
+    )
+    return Actor(name=x_actor or settings.default_actor, roles=roles)
 
 
 def _request_to_response(row, session: Session) -> BuildRequestResponse:
@@ -108,6 +131,7 @@ def _request_to_response(row, session: Session) -> BuildRequestResponse:
         repository=row.repository,
         gitRef=row.git_ref,
         resolvedCommit=row.resolved_commit,
+        commitResolution=getattr(row, "commit_resolution", None),
         solutionPath=row.solution_path,
         configuration=row.configuration,
         platform=row.platform,
@@ -223,19 +247,21 @@ def create_request(
     request: Request,
     session: SessionDep,
     background_tasks: BackgroundTasks,
-    actor: Annotated[str, Depends(actor_from_headers)],
+    actor: Annotated[object, Depends(actor_from_headers)],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
     catalog = get_catalog(request)
     settings = get_settings(request)
+    actor_name = getattr(actor, "name", str(actor))
     try:
         row = create_build_request(
             session,
             catalog,
             payload=body.model_dump(),
-            actor=actor,
+            actor=actor_name,
             idempotency_key=idempotency_key,
             factory_enabled_override=settings.factory_enabled,
+            git_resolver=request.app.state.git_resolver,
         )
     except ProfileRejected as exc:
         raise HTTPException(status_code=400, detail={"code": exc.code, "message": exc.message}) from exc
@@ -447,13 +473,15 @@ async def reconcile_leases(request: Request, session: SessionDep):
     return reconcile_expired_leases(session)
 
 
-def _require_simulation_enabled(request: Request) -> None:
+def _require_simulation_enabled(request: Request, actor=None) -> None:
     settings = get_settings(request)
     if not settings.simulate_workers:
         raise HTTPException(
             status_code=403,
             detail="simulation disabled; set PORTAL_SIMULATE_WORKERS=true for local only",
         )
+    if actor is not None and hasattr(actor, "can_simulate") and not actor.can_simulate:
+        raise HTTPException(status_code=403, detail="actor not allowed to simulate")
 
 
 @router.post("/internal/v1/simulate/factory/{profile_hash}")
@@ -492,9 +520,14 @@ def simulate_auto(request_id: str, request: Request, session: SessionDep):
 
 
 @router.post("/api/v1/build-requests/{request_id}/simulate")
-def simulate_request_from_api(request_id: str, request: Request, session: SessionDep):
+def simulate_request_from_api(
+    request_id: str,
+    request: Request,
+    session: SessionDep,
+    actor: Annotated[object, Depends(actor_from_headers)],
+):
     """Dev helper: advance factory/project simulation for a request."""
-    _require_simulation_enabled(request)
+    _require_simulation_enabled(request, actor)
     catalog = get_catalog(request)
     try:
         return auto_advance_request(session, catalog, request_id=request_id)

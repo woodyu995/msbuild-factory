@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.db.models import BuildEvent, BuildRequest, utcnow
 from app.domain.catalog import Catalog
 from app.domain.profile_resolver import ProfileRejected
-from app.domain.git_resolve import GitResolveError, resolve_git_ref
+from app.domain.git_resolve import GitResolveError
 from app.domain.project_validation import (
     InvalidProjectInput,
     validate_repository,
@@ -43,6 +43,7 @@ def create_build_request(
     actor: str,
     idempotency_key: str | None = None,
     factory_enabled_override: bool | None = None,
+    git_resolver=None,
 ) -> BuildRequest:
     if idempotency_key:
         existing = session.scalar(
@@ -65,13 +66,19 @@ def create_build_request(
     repository = validate_repository(project["repository"])
     solution_path = validate_solution_path(project["solutionPath"])
     git_ref = project["gitRef"]
-    resolved_commit, commit_resolution = resolve_git_ref(git_ref)
+    if git_resolver is None:
+        from app.domain.git_resolve import PlaceholderGitResolver
+
+        git_resolver = PlaceholderGitResolver()
+    resolved = git_resolver.resolve(repository, git_ref)
+    resolved_commit, commit_resolution = resolved.commit, resolved.mode
 
     request = BuildRequest(
         id=_new_request_id(),
         repository=repository,
         git_ref=git_ref,
         resolved_commit=resolved_commit,
+        commit_resolution=commit_resolution,
         solution_path=solution_path,
         configuration=project.get("configuration") or "Release",
         platform=project.get("platform") or "x64",

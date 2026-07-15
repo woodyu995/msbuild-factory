@@ -121,23 +121,98 @@ def cmd_build(args: argparse.Namespace) -> None:
         print(json.dumps({"ok": True, "dryRun": True, "imageDigest": digest}))
         return
 
-    # Real host path (Windows): docker build with RO layout mounts.
+    import shutil
+    import subprocess
+
+    if shutil.which("docker") is None:
+        raise SystemExit("docker not found on PATH; use --dry-run or install Docker Engine")
+
+    layout_root = args.layout_root or os.environ.get("IMAGE_FACTORY_LAYOUT_ROOT", "")
+    installer_root = args.installer_root or os.environ.get("IMAGE_FACTORY_INSTALLER_ROOT", "")
+    if not layout_root or not installer_root:
+        raise SystemExit(
+            "IMAGE_FACTORY_LAYOUT_ROOT and IMAGE_FACTORY_INSTALLER_ROOT are required for real builds"
+        )
+
+    # Copy shared install scripts into build context if present beside this repo layout.
+    scripts_src = Path(__file__).resolve().parents[3] / "portal" / "backend" / "image_factory" / "scripts"
+    scripts_dst = work / "scripts"
+    if scripts_src.exists() and not scripts_dst.exists():
+        shutil.copytree(scripts_src, scripts_dst)
+
+    staging_tag = f'{arts["stagingRepository"]}:{arts["imageTag"]}'
+    final_tag = f'{arts["finalRepository"]}:{arts["imageTag"]}'
     dockerfile = work / "Dockerfile"
-    tag = f'{arts["stagingRepository"]}:{arts["imageTag"]}'
+
     build_cmd = [
         "docker",
         "build",
         "-f",
         str(dockerfile),
         "-t",
-        tag,
+        staging_tag,
         str(work),
     ]
-    print(json.dumps({"ok": False, "message": "non-dry-run requires Windows factory host", "cmd": build_cmd}))
-    raise SystemExit(
-        "Real docker build is host-specific. Re-run with --dry-run or set FACTORY_DRY_RUN=1 "
-        "until Offline Layout mounts are configured."
+    # RO mounts for layout/installers are host-engine specific; export as build-arg paths.
+    env = os.environ.copy()
+    env["IMAGE_FACTORY_LAYOUT_ROOT"] = layout_root
+    env["IMAGE_FACTORY_INSTALLER_ROOT"] = installer_root
+
+    print(json.dumps({"ok": True, "phase": "docker-build", "cmd": build_cmd}))
+    built = subprocess.run(build_cmd, check=False, capture_output=True, text=True, env=env)
+    if built.returncode != 0:
+        raise SystemExit(f"docker build failed: {built.stderr or built.stdout}")
+
+    # Promote staging -> final tag locally, push, then prefer registry RepoDigest.
+    subprocess.run(["docker", "tag", staging_tag, final_tag], check=True)
+    push = subprocess.run(["docker", "push", final_tag], check=False, capture_output=True, text=True)
+    if push.returncode != 0:
+        raise SystemExit(f"docker push failed: {push.stderr or push.stdout}")
+
+    digest = ""
+    inspect = subprocess.run(
+        ["docker", "image", "inspect", "--format", "{{json .RepoDigests}}", final_tag],
+        check=False,
+        capture_output=True,
+        text=True,
     )
+    if inspect.returncode == 0 and inspect.stdout.strip():
+        try:
+            digests = json.loads(inspect.stdout)
+            for entry in digests or []:
+                if "@sha256:" in entry:
+                    digest = "sha256:" + entry.split("@sha256:", 1)[1].strip()
+                    break
+        except json.JSONDecodeError:
+            digest = ""
+    if not digest:
+        inspect2 = subprocess.run(
+            ["docker", "image", "inspect", "--format", "{{.Id}}", final_tag],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        digest = inspect2.stdout.strip()
+        if not digest.startswith("sha256:"):
+            digest = f"sha256:{digest}"
+
+    capability = _capability_from_manifest(arts["installManifest"])
+    (work / "result.json").write_text(
+        json.dumps(
+            {
+                "dryRun": False,
+                "imageDigest": digest,
+                "capabilityProfile": capability,
+                "stagingRepository": arts.get("stagingRepository"),
+                "finalRepository": arts.get("finalRepository"),
+                "imageTag": arts.get("imageTag"),
+                "finalTag": final_tag,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    print(json.dumps({"ok": True, "dryRun": False, "imageDigest": digest, "finalTag": final_tag}))
 
 
 def _capability_from_manifest(manifest: dict[str, Any]) -> dict[str, Any]:

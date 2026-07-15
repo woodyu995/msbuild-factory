@@ -2,7 +2,7 @@
 
 ## Verdict
 
-**Request changes → addressed in follow-up commit.**
+**Request changes → addressed** (auth gates + lease CAS + factory lock + cutover paths).
 
 ## Findings fixed
 
@@ -17,10 +17,19 @@
 | Medium | `solutionPath` traversal | Allowlist validation |
 | Medium | Arbitrary build-event jumps | Transition allow-list |
 
-## Remaining (next)
+## Cutover implemented
 
-1. Real git commit resolve (replace `resolved:{ref}` placeholder)
-2. Real checkout / NuGet / MSBuild in Jenkins Windows container
-3. Factory host non-dry-run docker build path
-4. Partial unique DB index on active `profile_hash` (Postgres)
-5. Strong identity for `X-Actor` / SSO
+| Item | Status |
+|------|--------|
+| Real git commit resolve | `PORTAL_GIT_RESOLVE_MODE=placeholder\|ls_remote\|http_api` (+ `PORTAL_GIT_REQUIRE_EXACT`) |
+| Windows checkout / NuGet / MSBuild | `jenkins/shared-library/scripts/windows/*.ps1` injected by project Jenkinsfile |
+| Factory non-dry-run docker | `portal_factory_agent.py build` without `--dry-run` / `FACTORY_DRY_RUN=0` |
+| Partial unique on active `profile_hash` | `build_image_profile_hash_active_uidx` (Postgres + SQLite where) |
+| Actor auth | Bearer `PORTAL_API_TOKENS` + optional `PORTAL_REQUIRE_AUTH` (SSO still external IdP) |
+
+## Still external / ops-owned
+
+1. Wire Jenkins credentials `git-url-template`, `nuget-internal-feed-url`
+2. Point Portal at real git (`ls_remote` or `http_api`) and set `PORTAL_GIT_REQUIRE_EXACT=true` in prod
+3. Factory host: layouts/installers + Registry push ACL
+4. Corporate SSO in front of Portal (tokens are service-account bridge until then)

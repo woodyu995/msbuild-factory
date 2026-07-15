@@ -61,6 +61,25 @@ python jenkins/shared-library/scripts/portal_factory_agent.py dry-run-all \
 4. `finalize` — READY + capabilityProfile Callback  
    실패 시 `fail`
 
+### 실빌드 (non-dry-run)
+
+```bash
+export IMAGE_FACTORY_LAYOUT_ROOT=\\storage\vs-layouts
+export IMAGE_FACTORY_INSTALLER_ROOT=\\storage\installers
+export FACTORY_DRY_RUN=0
+
+python jenkins/shared-library/scripts/portal_factory_agent.py build \
+  --portal-url https://portal.internal \
+  --hmac-secret "$PORTAL_HMAC" \
+  --profile-hash <PROFILE_HASH> \
+  --lease-id <LEASE_ID> \
+  --request-id <BUILD_REQUEST_ID> \
+  --work-dir D:\factory-work\<PROFILE_HASH>
+```
+
+요구사항: Docker Engine(Windows containers), Registry login, Layout/Installer 경로 존재.  
+`build`는 staging tag로 `docker build` → final tag → `docker push` → RepoDigest 수집 후 `result.json`에 기록한다.
+
 ## 6. OS 호환
 
 | 이미지 base | 노드 라벨 |

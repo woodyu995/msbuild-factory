@@ -9,6 +9,8 @@ Implements the revised design control plane and a local end-to-end simulation pa
 - Seeded Hot Preset READY images
 - On-demand Image Factory lock/lease/waiters
 - Dockerfile / `.vsconfig` / install manifest generation
+- Pluggable git commit resolve (`placeholder` / `ls_remote` / `http_api`)
+- Optional Bearer API tokens (`PORTAL_API_TOKENS`)
 - Local Factory/Project **worker simulation** (manual or `PORTAL_SIMULATE_WORKERS=true`)
 - Optional real Jenkins HTTP trigger (`PORTAL_JENKINS_*`)
 - Minimal React UI
@@ -29,6 +31,18 @@ Tests:
 cd portal/backend
 PYTHONPATH=. pytest -q
 ```
+
+### Key env vars
+
+| Variable | Purpose |
+|----------|---------|
+| `PORTAL_GIT_RESOLVE_MODE` | `placeholder` (default), `ls_remote`, `http_api` |
+| `PORTAL_GIT_URL_TEMPLATE` | e.g. `https://git/{repository}.git` for `ls_remote` |
+| `PORTAL_GIT_REQUIRE_EXACT` | Reject placeholder commits (prod) |
+| `PORTAL_REQUIRE_AUTH` | Require `Authorization: Bearer …` |
+| `PORTAL_API_TOKENS` | `name:token:role1\|role2,…` |
+| `PORTAL_SIMULATE_WORKERS` | Local auto-advance only |
+| `PORTAL_JENKINS_*` | Real Jenkins trigger |
 
 ## Frontend
 
@@ -53,5 +67,7 @@ UI proxies `/api` to `http://127.0.0.1:8000`.
 
 - Simulation does **not** run Windows Docker/MSBuild; it completes Portal state transitions
 - Real Jenkins: set `PORTAL_JENKINS_URL`, `PORTAL_JENKINS_USERNAME`, `PORTAL_JENKINS_API_TOKEN`
-- Windows Factory host / K8s Pod build remain external
-- SSO/RBAC is not wired; send optional `X-Actor`
+- Real commits: set `PORTAL_GIT_RESOLVE_MODE` + `PORTAL_GIT_REQUIRE_EXACT=true`
+- Factory host: see `docs/factory-host-runbook.md` (`FACTORY_DRY_RUN=0`)
+- Project Windows scripts: `jenkins/shared-library/scripts/windows/`
+- Auth: Bearer tokens until corporate SSO is fronted; optional `X-Actor` only when auth is off

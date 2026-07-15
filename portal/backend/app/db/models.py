@@ -7,11 +7,13 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
     create_engine,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
@@ -39,6 +41,16 @@ class BuildProfile(Base):
 
 class BuildImage(Base):
     __tablename__ = "build_image"
+    __table_args__ = (
+        # Postgres: one non-deleted image row per profile_hash
+        Index(
+            "build_image_profile_hash_active_uidx",
+            "profile_hash",
+            unique=True,
+            postgresql_where=text("status <> 'DELETED'"),
+            sqlite_where=text("status <> 'DELETED'"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     profile_hash: Mapped[str] = mapped_column(String(64), index=True)
@@ -93,7 +105,8 @@ class BuildRequest(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     repository: Mapped[str] = mapped_column(String(255))
     git_ref: Mapped[str] = mapped_column(String(255))
-    resolved_commit: Mapped[str] = mapped_column(String(64))
+    resolved_commit: Mapped[str] = mapped_column(String(255))
+    commit_resolution: Mapped[str] = mapped_column(String(32), default="placeholder")
     solution_path: Mapped[str] = mapped_column(String(512))
     configuration: Mapped[str] = mapped_column(String(64))
     platform: Mapped[str] = mapped_column(String(64))

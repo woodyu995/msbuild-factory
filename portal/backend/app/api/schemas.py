@@ -69,6 +69,7 @@ class BuildRequestResponse(BaseModel):
     repository: str
     gitRef: str
     resolvedCommit: str
+    commitResolution: str | None = None
     solutionPath: str
     configuration: str
     platform: str
