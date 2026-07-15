@@ -58,7 +58,7 @@ def cmd_fetch(args: argparse.Namespace) -> None:
     work = Path(args.work_dir)
     work.mkdir(parents=True, exist_ok=True)
     url = f"{args.portal_url.rstrip('/')}/internal/v1/images/{args.profile_hash}/factory-artifacts"
-    arts = _request("GET", url)
+    arts = _request("POST", url, body={}, hmac_secret=args.hmac_secret)
     (work / "Dockerfile").write_text(arts["dockerfile"], encoding="utf-8")
     (work / "profile.vsconfig").write_text(
         json.dumps(arts["vsconfig"], indent=2), encoding="utf-8"
@@ -216,7 +216,7 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--hmac-secret", required=True)
 
     p_fetch = sub.add_parser("fetch")
-    add_common(p_fetch)
+    add_common(p_fetch, need_hmac=True)
 
     p_hb = sub.add_parser("heartbeat")
     add_common(p_hb, need_hmac=True)

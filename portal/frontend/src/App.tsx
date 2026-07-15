@@ -317,7 +317,8 @@ export default function App() {
             {buildResult &&
               !["SUCCEEDED", "PROFILE_REJECTED", "CANCELLED", "IMAGE_BUILD_FAILED", "PROJECT_BUILD_FAILED", "TEST_FAILED"].includes(
                 buildResult.status,
-              ) && (
+              ) &&
+              options?.simulateWorkers && (
                 <button className="secondary" type="button" disabled={busy} onClick={onSimulate}>
                   Simulate workers
                 </button>

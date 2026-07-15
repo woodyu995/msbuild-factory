@@ -47,13 +47,22 @@ def count_creating(session: Session) -> int:
     )
 
 
-def get_active_image(session: Session, profile_hash: str) -> BuildImage | None:
-    return session.scalar(
-        select(BuildImage).where(
-            BuildImage.profile_hash == profile_hash,
-            BuildImage.status != "DELETED",
-        )
+def get_active_image(session: Session, profile_hash: str, *, for_update: bool = False) -> BuildImage | None:
+    stmt = select(BuildImage).where(
+        BuildImage.profile_hash == profile_hash,
+        BuildImage.status != "DELETED",
     )
+    if for_update:
+        stmt = stmt.with_for_update()
+    # Prefer in-flight, then READY, then newest row to avoid arbitrary picks.
+    rows = list(session.scalars(stmt.order_by(BuildImage.id.desc())).all())
+    if not rows:
+        return None
+    for status in ("CREATING", "VALIDATING", "READY", "FAILED", "DEPRECATED", "QUARANTINED"):
+        for row in rows:
+            if row.status == status:
+                return row
+    return rows[0]
 
 
 def acquire_or_wait_factory(
@@ -67,7 +76,7 @@ def acquire_or_wait_factory(
 
     Returns request status set: IMAGE_BUILD_QUEUED | IMAGE_WAITING
     """
-    existing = get_active_image(session, resolved.profile_hash)
+    existing = get_active_image(session, resolved.profile_hash, for_update=True)
 
     if existing and existing.status == "READY":
         # race: became ready between resolve and lock
@@ -106,6 +115,17 @@ def acquire_or_wait_factory(
         request.finished_at = utcnow()
         append_event(session, request.id, "PROFILE_REJECTED", request.error_message)
         return "PROFILE_REJECTED"
+    elif existing:
+        # DEPRECATED or unexpected: do not create a duplicate active row.
+        if count_creating(session) >= MAX_GLOBAL_CREATING:
+            raise FactoryBusy("factory slots full")
+        lease_id = f"factory-{uuid.uuid4().hex[:10]}"
+        existing.status = "CREATING"
+        existing.lease_id = lease_id
+        existing.lease_owner = lease_id
+        existing.lease_expires_at = utcnow() + timedelta(minutes=_lease_ttl_minutes(catalog))
+        existing.updated_at = utcnow()
+        image = existing
     else:
         if count_creating(session) >= MAX_GLOBAL_CREATING:
             raise FactoryBusy("factory slots full")

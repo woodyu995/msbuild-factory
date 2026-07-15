@@ -87,7 +87,21 @@ def test_factory_queue_waiter_and_ready_callback(tmp_path):
         assert any(job == "msbuild-image-factory" for job, _ in jenkins.calls)
 
         # fetch artifacts
-        arts = client.get(f"/internal/v1/images/{profile_hash}/factory-artifacts").json()
+        import time
+        from app.security.hmac_auth import sign_body
+
+        raw = b"{}"
+        ts = str(int(time.time()))
+        sig = sign_body("dev-callback-secret-change-me", ts, raw)
+        arts = client.post(
+            f"/internal/v1/images/{profile_hash}/factory-artifacts",
+            content=raw,
+            headers={
+                "Content-Type": "application/json",
+                "X-Timestamp": ts,
+                "X-Signature": sig,
+            },
+        ).json()
         assert "FROM ${BASE_IMAGE}" in arts["dockerfile"]
         assert "Microsoft.Component.MSBuild" in arts["vsconfig"]["components"]
         assert arts["installManifest"]["visualStudio"]["generation"] == "2022"
@@ -174,7 +188,21 @@ def test_reconcile_expired_lease(tmp_path):
         session.commit()
         session.close()
 
-        result = client.post("/internal/v1/reconcile/leases").json()
+        import time
+        from app.security.hmac_auth import sign_body
+
+        raw = b"{}"
+        ts = str(int(time.time()))
+        sig = sign_body("dev-callback-secret-change-me", ts, raw)
+        result = client.post(
+            "/internal/v1/reconcile/leases",
+            content=raw,
+            headers={
+                "Content-Type": "application/json",
+                "X-Timestamp": ts,
+                "X-Signature": sig,
+            },
+        ).json()
         assert profile_hash in result["expiredImages"]
         assert created["id"] in result["affectedRequests"]
 

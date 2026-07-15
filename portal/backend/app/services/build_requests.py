@@ -10,6 +10,11 @@ from sqlalchemy.orm import Session
 from app.db.models import BuildEvent, BuildRequest, utcnow
 from app.domain.catalog import Catalog
 from app.domain.profile_resolver import ProfileRejected
+from app.domain.project_validation import (
+    InvalidProjectInput,
+    validate_repository,
+    validate_solution_path,
+)
 from app.services.events import append_event
 from app.services.factory import (
     FactoryBusy,
@@ -56,15 +61,18 @@ def create_build_request(
     }:
         raise ProfileRejected(f"unsupported nuget mode: {nuget_mode}")
 
+    repository = validate_repository(project["repository"])
+    solution_path = validate_solution_path(project["solutionPath"])
+
     git_ref = project["gitRef"]
     resolved_commit = git_ref if len(git_ref) >= 40 else f"resolved:{git_ref}"
 
     request = BuildRequest(
         id=_new_request_id(),
-        repository=project["repository"],
+        repository=repository,
         git_ref=git_ref,
         resolved_commit=resolved_commit,
-        solution_path=project["solutionPath"],
+        solution_path=solution_path,
         configuration=project.get("configuration") or "Release",
         platform=project.get("platform") or "x64",
         requested_profile_hash="",
@@ -116,9 +124,10 @@ def create_build_request(
         try:
             acquire_or_wait_factory(session, catalog, resolved=resolved, request=request)
         except FactoryBusy as exc:
-            request.status = "IMAGE_BUILD_QUEUED"
+            request.status = "FACTORY_BUSY"
             request.error_code = "FACTORY_BUSY"
             request.error_message = str(exc)
+            request.finished_at = utcnow()
             append_event(session, request.id, "FACTORY_BUSY", str(exc))
         session.flush()
         return request
@@ -185,6 +194,43 @@ def apply_build_event_callback(
         "IMAGE_BUILDING",
         "IMAGE_VALIDATING",
     }
+    allowed_from = {
+        "BUILDING": {"BUILD_QUEUED", "BUILDING"},
+        "TESTING": {"BUILDING", "TESTING"},
+        "PUBLISHING": {"TESTING", "PUBLISHING", "BUILDING"},
+        "SUCCEEDED": {"PUBLISHING", "TESTING", "BUILDING", "BUILD_QUEUED"},
+        "PROJECT_BUILD_FAILED": {
+            "BUILD_QUEUED",
+            "BUILDING",
+            "TESTING",
+            "PUBLISHING",
+        },
+        "TEST_FAILED": {"TESTING", "BUILDING"},
+        "IMAGE_BUILDING": {"IMAGE_BUILD_QUEUED", "IMAGE_WAITING", "IMAGE_BUILDING"},
+        "IMAGE_VALIDATING": {"IMAGE_BUILDING", "IMAGE_VALIDATING", "IMAGE_BUILD_QUEUED"},
+        "IMAGE_BUILD_FAILED": {
+            "IMAGE_BUILD_QUEUED",
+            "IMAGE_WAITING",
+            "IMAGE_BUILDING",
+            "IMAGE_VALIDATING",
+        },
+        "IMAGE_VALIDATION_FAILED": {"IMAGE_VALIDATING", "IMAGE_BUILDING"},
+        "CANCELLED": {
+            "REQUESTED",
+            "VALIDATING_PROFILE",
+            "RESOLVING_IMAGE",
+            "IMAGE_BUILD_QUEUED",
+            "IMAGE_WAITING",
+            "BUILD_QUEUED",
+            "BUILDING",
+            "TESTING",
+            "PUBLISHING",
+        },
+    }
+    if event_type in allowed_from and request.status not in allowed_from[event_type]:
+        raise ValueError(
+            f"invalid transition {request.status} -> {event_type}"
+        )
 
     if event_type in progressing | terminal_success | terminal_fail:
         request.status = event_type

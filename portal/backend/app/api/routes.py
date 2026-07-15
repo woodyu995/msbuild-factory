@@ -17,6 +17,7 @@ from app.api.schemas import (
     ValidateResponse,
 )
 from app.domain.profile_resolver import ProfileRejected
+from app.domain.project_validation import InvalidProjectInput
 from app.security.hmac_auth import CallbackAuthError, verify_hmac
 from app.services.build_requests import (
     apply_build_event_callback,
@@ -237,6 +238,8 @@ def create_request(
         )
     except ProfileRejected as exc:
         raise HTTPException(status_code=400, detail={"code": exc.code, "message": exc.message}) from exc
+    except InvalidProjectInput as exc:
+        raise HTTPException(status_code=400, detail={"code": exc.code, "message": exc.message}) from exc
 
     maybe_schedule_auto_advance(
         background_tasks=background_tasks,
@@ -371,6 +374,8 @@ async def internal_build_events(request: Request, session: SessionDep):
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"ok": True, "status": row.status}
 
 
@@ -403,8 +408,10 @@ async def internal_image_status(profile_hash: str, request: Request, session: Se
     }
 
 
-@router.get("/internal/v1/images/{profile_hash}/factory-artifacts")
-def factory_artifacts(profile_hash: str, session: SessionDep):
+@router.post("/internal/v1/images/{profile_hash}/factory-artifacts")
+async def factory_artifacts(profile_hash: str, request: Request, session: SessionDep):
+    raw = await request.body()
+    _verify_callback(request, raw)
     profile = session.scalar(select(BuildProfile).where(BuildProfile.profile_hash == profile_hash))
     if profile is None:
         raise HTTPException(status_code=404, detail="profile not found")
@@ -433,12 +440,24 @@ async def factory_heartbeat(profile_hash: str, request: Request, session: Sessio
 
 
 @router.post("/internal/v1/reconcile/leases")
-def reconcile_leases(session: SessionDep):
+async def reconcile_leases(request: Request, session: SessionDep):
+    raw = await request.body()
+    _verify_callback(request, raw)
     return reconcile_expired_leases(session)
+
+
+def _require_simulation_enabled(request: Request) -> None:
+    settings = get_settings(request)
+    if not settings.simulate_workers:
+        raise HTTPException(
+            status_code=403,
+            detail="simulation disabled; set PORTAL_SIMULATE_WORKERS=true for local only",
+        )
 
 
 @router.post("/internal/v1/simulate/factory/{profile_hash}")
 def simulate_factory(profile_hash: str, request: Request, session: SessionDep):
+    _require_simulation_enabled(request)
     catalog = get_catalog(request)
     try:
         return simulate_factory_run(session, catalog, profile_hash=profile_hash)
@@ -449,7 +468,8 @@ def simulate_factory(profile_hash: str, request: Request, session: SessionDep):
 
 
 @router.post("/internal/v1/simulate/build-requests/{request_id}")
-def simulate_build(request_id: str, session: SessionDep, fail: bool = False):
+def simulate_build(request_id: str, request: Request, session: SessionDep, fail: bool = False):
+    _require_simulation_enabled(request)
     try:
         return simulate_project_build(session, request_id=request_id, fail=fail)
     except LookupError as exc:
@@ -460,6 +480,7 @@ def simulate_build(request_id: str, session: SessionDep, fail: bool = False):
 
 @router.post("/internal/v1/simulate/build-requests/{request_id}/auto")
 def simulate_auto(request_id: str, request: Request, session: SessionDep):
+    _require_simulation_enabled(request)
     catalog = get_catalog(request)
     try:
         return auto_advance_request(session, catalog, request_id=request_id)
@@ -472,6 +493,7 @@ def simulate_auto(request_id: str, request: Request, session: SessionDep):
 @router.post("/api/v1/build-requests/{request_id}/simulate")
 def simulate_request_from_api(request_id: str, request: Request, session: SessionDep):
     """Dev helper: advance factory/project simulation for a request."""
+    _require_simulation_enabled(request)
     catalog = get_catalog(request)
     try:
         return auto_advance_request(session, catalog, request_id=request_id)

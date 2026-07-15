@@ -51,6 +51,8 @@ python jenkins/shared-library/scripts/portal_factory_agent.py dry-run-all \
   --work-dir /tmp/factory-work
 ```
 
+`fetch` / `factory-artifacts` 는 HMAC 서명된 **POST** 이다.
+
 ## 5. 빌드 순서
 
 1. `fetch` — Dockerfile / vsconfig / install-manifest

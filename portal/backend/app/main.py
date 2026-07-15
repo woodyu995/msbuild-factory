@@ -16,6 +16,11 @@ from app.services.seed import seed_preset_images
 
 def create_app(database_url: str | None = None, catalog_path: Path | None = None) -> FastAPI:
     settings = get_settings()
+    if not settings.allow_insecure_defaults and settings.is_default_hmac_secret:
+        raise RuntimeError(
+            "Refusing to start with default PORTAL_CALLBACK_HMAC_SECRET; "
+            "set a strong secret or PORTAL_ALLOW_INSECURE_DEFAULTS=true for local only"
+        )
     db_url = database_url or settings.database_url
     cat_path = catalog_path or settings.catalog_path
 
@@ -52,6 +57,7 @@ def create_app(database_url: str | None = None, catalog_path: Path | None = None
             "status": "ok",
             "simulateWorkers": settings.simulate_workers,
             "jenkinsConfigured": bool(settings.jenkins_url and settings.jenkins_api_token),
+            "insecureDefaults": settings.allow_insecure_defaults and settings.is_default_hmac_secret,
         }
 
     return app

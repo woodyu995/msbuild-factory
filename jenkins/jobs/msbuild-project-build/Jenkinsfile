@@ -2,14 +2,10 @@
 /**
  * msbuild-project-build
  *
- * Parameters:
- *   BUILD_REQUEST_ID
- *
- * Assumes Portal already resolved a READY image digest.
- * Pod YAML is fetched from Portal (/pod-template) so nodeSelector and digest stay in sync.
+ * Uses Portal /pod-template YAML as the Kubernetes agent definition.
  */
 pipeline {
-  agent none
+  agent { label 'linux || built-in' }
 
   options {
     timestamps()
@@ -26,14 +22,14 @@ pipeline {
   }
 
   stages {
-    stage('Resolve request + pod template') {
-      agent { label 'linux || built-in' }
+    stage('Resolve + Windows build') {
       steps {
         script {
           if (!params.BUILD_REQUEST_ID?.trim()) {
             error('BUILD_REQUEST_ID is required')
           }
-          def meta = sh(
+
+          def metaText = sh(
             returnStdout: true,
             script: """
               python3 jenkins/shared-library/scripts/portal_project_agent.py \\
@@ -42,19 +38,11 @@ pipeline {
                 --request-id "\$BUILD_REQUEST_ID"
             """
           ).trim()
-          writeFile file: 'request-meta.json', text: meta
-          def parsed = readJSON file: 'request-meta.json'
-          if (!parsed.imageDigest) {
+          writeFile file: 'request-meta.json', text: metaText
+          def meta = readJSON file: 'request-meta.json'
+          if (!meta.imageDigest) {
             error("Portal request ${params.BUILD_REQUEST_ID} has no imageDigest yet")
           }
-          env.IMAGE_DIGEST = parsed.imageDigest
-          env.WINDOWS_RELEASE = parsed.windowsBase ?: 'ltsc2022'
-          env.REPO = parsed.repository
-          env.COMMIT = parsed.resolvedCommit
-          env.SOLUTION = parsed.solutionPath
-          env.CONFIGURATION = parsed.configuration ?: 'Release'
-          env.PLATFORM = parsed.platform ?: 'x64'
-          env.NUGET_MODE = parsed.nugetMode ?: 'repo-packages-and-internal-feed'
 
           def podYaml = sh(
             returnStdout: true,
@@ -66,144 +54,77 @@ pipeline {
                 --format yaml
             """
           ).trim()
-          // Keep container alive for Jenkins Kubernetes plugin
-          if (!podYaml.contains('command:')) {
-            podYaml = podYaml + '''
-  # injected by Jenkinsfile for long-running agent container
-'''
+
+          // Keep builder container alive for the Kubernetes plugin.
+          if (!podYaml.contains('Start-Sleep')) {
+            podYaml = podYaml.replaceFirst(
+              /(?m)^(\\s*)name:\\s*builder\\s*$/,
+              '''\$1name: builder
+\$1command:
+\$1  - powershell
+\$1args:
+\$1  - -Command
+\$1  - Start-Sleep -Seconds 86400'''
+            )
           }
           writeFile file: 'pod-template.yaml', text: podYaml
-          env.POD_TEMPLATE_YAML = podYaml
-        }
-      }
-    }
 
-    stage('Windows build') {
-      agent {
-        kubernetes {
-          yaml """
-apiVersion: v1
-kind: Pod
-metadata:
-  labels:
-    app.kubernetes.io/name: msbuild-project-build
-    build.company.io/request-id: ${params.BUILD_REQUEST_ID}
-spec:
-  os:
-    name: windows
-  nodeSelector:
-    kubernetes.io/os: windows
-    build.company.io/windows-release: ${env.WINDOWS_RELEASE}
-    build.company.io/purpose: msbuild
-  tolerations:
-    - key: build.company.io/windows
-      operator: Equal
-      value: "true"
-      effect: NoSchedule
-  imagePullSecrets:
-    - name: internal-registry-secret
-  containers:
-    - name: builder
-      image: registry.internal/build/msbuild-profile@${env.IMAGE_DIGEST}
-      imagePullPolicy: IfNotPresent
-      workingDir: C:\\\\workspace
-      command:
-        - powershell
-      args:
-        - -Command
-        - Start-Sleep -Seconds 86400
-      resources:
-        requests:
-          cpu: "2"
-          memory: 4Gi
-          ephemeral-storage: 20Gi
-        limits:
-          cpu: "8"
-          memory: 16Gi
-          ephemeral-storage: 80Gi
-"""
-          defaultContainer 'builder'
-        }
-      }
-      stages {
-        stage('Notify BUILDING') {
-          steps {
-            powershell '''
-              python C:\\portal-tools\\portal_project_agent.py `
-                event `
-                --portal-url $env:PORTAL_BASE_URL `
-                --hmac-secret $env:PORTAL_HMAC_SECRET `
-                --request-id $env:BUILD_REQUEST_ID `
-                --event-type BUILDING `
-                --message "Project build started" `
-                --build-number $env:BUILD_NUMBER
-            '''
-          }
-        }
+          podTemplate(yaml: podYaml) {
+            node(POD_LABEL) {
+              container('builder') {
+                withEnv([
+                  "REPO=${meta.repository}",
+                  "COMMIT=${meta.resolvedCommit}",
+                  "SOLUTION=${meta.solutionPath}",
+                  "CONFIGURATION=${meta.configuration ?: 'Release'}",
+                  "PLATFORM=${meta.platform ?: 'x64'}",
+                  "NUGET_MODE=${meta.nugetMode ?: 'repo-packages-and-internal-feed'}",
+                ]) {
+                  powershell '''
+                    python C:\\portal-tools\\portal_project_agent.py `
+                      event `
+                      --portal-url $env:PORTAL_BASE_URL `
+                      --hmac-secret $env:PORTAL_HMAC_SECRET `
+                      --request-id $env:BUILD_REQUEST_ID `
+                      --event-type BUILDING `
+                      --message "Project build started" `
+                      --build-number $env:BUILD_NUMBER
 
-        stage('Checkout') {
-          steps {
-            powershell '''
-              Write-Host "Checkout" $env:REPO $env:COMMIT
-              # git clone / checkout $env:COMMIT
-            '''
-          }
-        }
+                    Write-Host "Checkout" $env:REPO $env:COMMIT
+                    Write-Host "NuGet mode:" $env:NUGET_MODE
+                    Write-Host "MSBuild" $env:SOLUTION $env:CONFIGURATION $env:PLATFORM
+                    # TODO: real git checkout / nuget restore / msbuild
 
-        stage('NuGet restore') {
-          steps {
-            powershell '''
-              Write-Host "NuGet mode:" $env:NUGET_MODE
-              # nuget/dotnet restore against internal feed only
-            '''
-          }
-        }
+                    python C:\\portal-tools\\portal_project_agent.py `
+                      event `
+                      --portal-url $env:PORTAL_BASE_URL `
+                      --hmac-secret $env:PORTAL_HMAC_SECRET `
+                      --request-id $env:BUILD_REQUEST_ID `
+                      --event-type TESTING `
+                      --message "Tests running" `
+                      --build-number $env:BUILD_NUMBER
 
-        stage('MSBuild') {
-          steps {
-            powershell '''
-              Write-Host "MSBuild" $env:SOLUTION $env:CONFIGURATION $env:PLATFORM
-              # msbuild.exe $env:SOLUTION /p:Configuration=$env:CONFIGURATION /p:Platform=$env:PLATFORM
-            '''
-          }
-        }
+                    python C:\\portal-tools\\portal_project_agent.py `
+                      event `
+                      --portal-url $env:PORTAL_BASE_URL `
+                      --hmac-secret $env:PORTAL_HMAC_SECRET `
+                      --request-id $env:BUILD_REQUEST_ID `
+                      --event-type PUBLISHING `
+                      --message "Publishing artifacts" `
+                      --build-number $env:BUILD_NUMBER
 
-        stage('Test + Publish') {
-          steps {
-            powershell '''
-              python C:\\portal-tools\\portal_project_agent.py `
-                event `
-                --portal-url $env:PORTAL_BASE_URL `
-                --hmac-secret $env:PORTAL_HMAC_SECRET `
-                --request-id $env:BUILD_REQUEST_ID `
-                --event-type TESTING `
-                --message "Tests running" `
-                --build-number $env:BUILD_NUMBER
-
-              python C:\\portal-tools\\portal_project_agent.py `
-                event `
-                --portal-url $env:PORTAL_BASE_URL `
-                --hmac-secret $env:PORTAL_HMAC_SECRET `
-                --request-id $env:BUILD_REQUEST_ID `
-                --event-type PUBLISHING `
-                --message "Publishing artifacts" `
-                --build-number $env:BUILD_NUMBER
-            '''
-          }
-        }
-
-        stage('Succeeded') {
-          steps {
-            powershell '''
-              python C:\\portal-tools\\portal_project_agent.py `
-                event `
-                --portal-url $env:PORTAL_BASE_URL `
-                --hmac-secret $env:PORTAL_HMAC_SECRET `
-                --request-id $env:BUILD_REQUEST_ID `
-                --event-type SUCCEEDED `
-                --message "Project build succeeded" `
-                --build-number $env:BUILD_NUMBER
-            '''
+                    python C:\\portal-tools\\portal_project_agent.py `
+                      event `
+                      --portal-url $env:PORTAL_BASE_URL `
+                      --hmac-secret $env:PORTAL_HMAC_SECRET `
+                      --request-id $env:BUILD_REQUEST_ID `
+                      --event-type SUCCEEDED `
+                      --message "Project build succeeded" `
+                      --build-number $env:BUILD_NUMBER
+                  '''
+                }
+              }
+            }
           }
         }
       }
@@ -221,7 +142,7 @@ spec:
             --request-id "$BUILD_REQUEST_ID" \
             --event-type PROJECT_BUILD_FAILED \
             --message "Jenkins project pipeline failed" \
-            --build-number "$BUILD_NUMBER"
+            --build-number "$BUILD_NUMBER" || true
         fi
       '''
     }

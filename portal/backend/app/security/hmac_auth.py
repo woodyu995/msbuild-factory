@@ -35,5 +35,12 @@ def verify_hmac(
 
     expected = sign_body(secret, timestamp_header, body)
     provided = signature_header.removeprefix("sha256=")
-    if not hmac.compare_digest(expected, provided):
+    # Normalize length to avoid ValueError from compare_digest on mismatch.
+    if len(provided) != len(expected):
+        raise CallbackAuthError("invalid signature")
+    try:
+        ok = hmac.compare_digest(expected, provided)
+    except (TypeError, ValueError) as exc:
+        raise CallbackAuthError("invalid signature") from exc
+    if not ok:
         raise CallbackAuthError("invalid signature")

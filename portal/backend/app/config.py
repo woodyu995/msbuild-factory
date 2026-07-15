@@ -24,9 +24,15 @@ class Settings(BaseSettings):
     # Local/dev: auto-simulate factory + project build after queueing
     # Set PORTAL_SIMULATE_WORKERS=true for end-to-end local demos.
     simulate_workers: bool = False
+    # When false, refuse to boot with the default HMAC secret.
+    allow_insecure_defaults: bool = True
     jenkins_url: str | None = None
     jenkins_username: str | None = None
     jenkins_api_token: str | None = None
+
+    @property
+    def is_default_hmac_secret(self) -> bool:
+        return self.callback_hmac_secret == "dev-callback-secret-change-me"
 
 
 @lru_cache

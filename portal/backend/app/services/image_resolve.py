@@ -131,8 +131,9 @@ def apply_image_status_callback(
     )
     if row is None:
         raise LookupError("image not found")
-    if row.lease_id and lease_id != row.lease_id:
-        raise PermissionError("stale leaseId")
+    # Lease CAS: mutating callbacks require an active lease that matches exactly.
+    if not row.lease_id or lease_id != row.lease_id:
+        raise PermissionError("stale or missing leaseId")
     now = utcnow()
     row.updated_at = now
     affected: list[str] = []

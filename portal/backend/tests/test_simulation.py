@@ -50,6 +50,8 @@ def test_manual_auto_simulate_cold_to_succeeded(tmp_path):
         ).json()
         assert created["status"] == "IMAGE_BUILD_QUEUED"
 
+        # Enable simulation for the explicit endpoint only (no background auto on create).
+        client.app.state.settings.simulate_workers = True
         advanced = client.post(f"/api/v1/build-requests/{created['id']}/simulate").json()
         assert advanced["finalStatus"] == "SUCCEEDED"
         assert any("factory" in step for step in advanced["steps"])
@@ -84,6 +86,7 @@ def test_preset_reuse_simulate_project_only(tmp_path):
         assert created["status"] == "BUILD_QUEUED"
         assert created["matchType"] == "EXACT"
 
+        client.app.state.settings.simulate_workers = True
         advanced = client.post(f"/api/v1/build-requests/{created['id']}/simulate").json()
         assert advanced["finalStatus"] == "SUCCEEDED"
 

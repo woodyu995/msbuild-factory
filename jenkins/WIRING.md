@@ -36,7 +36,8 @@ Seed from `jenkins/README.md` Job DSL, or create Pipeline jobs pointing at:
 2. Create cold build request → `IMAGE_BUILD_QUEUED`
 3. Run factory agent dry-run → READY / `BUILD_QUEUED`
 4. `GET /api/v1/build-requests/{id}/pod-template` → YAML with digest
-5. Optional: `POST /api/v1/build-requests/{id}/simulate` → `SUCCEEDED`
+5. Optional local only: `PORTAL_SIMULATE_WORKERS=true` then
+   `POST /api/v1/build-requests/{id}/simulate` → `SUCCEEDED`
 
 ## 5. Production cutover
 
