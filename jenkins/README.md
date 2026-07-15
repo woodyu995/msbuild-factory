@@ -1,6 +1,23 @@
-# Job DSL seed (optional)
+# Jenkins jobs, agents, and wiring for MSBuild image factory
 
-Use in a Jenkins seed job to create pipeline jobs from this repo.
+## Layout
+
+```text
+jenkins/
+  casc/           # Configuration as Code examples
+  jobs/           # Pipeline Jenkinsfiles
+  shared-library/ # Portal agent CLIs
+  WIRING.md       # Cutover checklist
+```
+
+## Jobs
+
+| Job | Purpose | Agent |
+|-----|---------|-------|
+| `msbuild-image-factory` | Build/push profile images | `msbuild-factory` Windows node |
+| `msbuild-project-build` | Build solution on READY digest | K8s Windows pod |
+
+Seed snippet: see below. Full wiring: [WIRING.md](./WIRING.md).
 
 ```groovy
 pipelineJob('msbuild-image-factory') {
@@ -40,9 +57,14 @@ pipelineJob('msbuild-project-build') {
 }
 ```
 
-Required Jenkins credentials:
-- `portal-base-url` (secret text)
-- `portal-callback-hmac` (secret text)
+## Credentials
 
-Required node label:
-- `msbuild-factory` — dedicated Windows factory host/VM
+- `portal-base-url`
+- `portal-callback-hmac`
+- `portal-jenkins-api` (Portal → Jenkins trigger)
+
+## Agents
+
+- Portal factory agent: `shared-library/scripts/portal_factory_agent.py`
+- Portal project agent: `shared-library/scripts/portal_project_agent.py`
+  - `resolve`, `pod-template`, `event`

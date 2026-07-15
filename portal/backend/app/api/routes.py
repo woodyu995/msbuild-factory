@@ -257,6 +257,37 @@ def get_request(request_id: str, session: SessionDep):
     return _request_to_response(row, session)
 
 
+@router.get("/api/v1/build-requests/{request_id}/pod-template")
+def get_pod_template(request_id: str, session: SessionDep, format: str = "yaml"):
+    from fastapi.responses import PlainTextResponse, JSONResponse
+    from app.domain.pod_template import render_windows_builder_pod, render_windows_builder_pod_yaml
+
+    row = get_build_request(session, request_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="build request not found")
+    response = _request_to_response(row, session)
+    if not response.imageDigest:
+        raise HTTPException(status_code=409, detail="image digest not resolved yet")
+    windows_base = response.windowsBase or "ltsc2022"
+    try:
+        if format == "json":
+            return JSONResponse(
+                render_windows_builder_pod(
+                    image_digest=response.imageDigest,
+                    windows_base=windows_base,
+                    request_id=request_id,
+                )
+            )
+        yaml_text = render_windows_builder_pod_yaml(
+            image_digest=response.imageDigest,
+            windows_base=windows_base,
+            request_id=request_id,
+        )
+        return PlainTextResponse(yaml_text, media_type="application/yaml")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/api/v1/build-requests/{request_id}/events")
 async def request_events(request_id: str, request: Request, session: SessionDep):
     from fastapi.responses import StreamingResponse

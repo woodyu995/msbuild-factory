@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: msbuild-build
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: msbuild-builder
+  namespace: msbuild-build
+---
+# Pull-only secret must be created out-of-band:
+# kubectl -n msbuild-build create secret docker-registry internal-registry-secret ...
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: msbuild-builder
+  namespace: msbuild-build
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/exec"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: msbuild-builder
+  namespace: msbuild-build
+subjects:
+  - kind: ServiceAccount
+    name: msbuild-builder
+    namespace: msbuild-build
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: msbuild-builder

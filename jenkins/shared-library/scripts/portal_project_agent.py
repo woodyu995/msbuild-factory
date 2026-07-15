@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import hmac
 import json
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -24,9 +25,11 @@ def _request(
     *,
     body: dict[str, Any] | None = None,
     hmac_secret: str | None = None,
+    accept: str = "application/json",
+    as_text: bool = False,
 ) -> Any:
     data = None
-    headers = {"Accept": "application/json"}
+    headers = {"Accept": accept}
     raw = b""
     if body is not None:
         raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -40,6 +43,8 @@ def _request(
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
             payload = resp.read().decode("utf-8")
+            if as_text:
+                return payload
             return json.loads(payload) if payload else {}
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
@@ -49,7 +54,6 @@ def _request(
 def cmd_resolve(args: argparse.Namespace) -> None:
     url = f"{args.portal_url.rstrip('/')}/api/v1/build-requests/{args.request_id}"
     row = _request("GET", url)
-    # windowsBase is not on response yet; derive from matched image when present.
     out = {
         "id": row["id"],
         "status": row["status"],
@@ -67,6 +71,19 @@ def cmd_resolve(args: argparse.Namespace) -> None:
         "environment": row.get("environment"),
     }
     print(json.dumps(out, ensure_ascii=False))
+
+
+def cmd_pod_template(args: argparse.Namespace) -> None:
+    fmt = args.format or "yaml"
+    url = (
+        f"{args.portal_url.rstrip('/')}/api/v1/build-requests/"
+        f"{args.request_id}/pod-template?format={fmt}"
+    )
+    if fmt == "json":
+        print(json.dumps(_request("GET", url), ensure_ascii=False))
+        return
+    text = _request("GET", url, accept="application/yaml", as_text=True)
+    sys.stdout.write(text)
 
 
 def cmd_event(args: argparse.Namespace) -> None:
@@ -92,6 +109,11 @@ def main(argv: list[str] | None = None) -> int:
     p_resolve.add_argument("--portal-url", required=True)
     p_resolve.add_argument("--request-id", required=True)
 
+    p_pod = sub.add_parser("pod-template")
+    p_pod.add_argument("--portal-url", required=True)
+    p_pod.add_argument("--request-id", required=True)
+    p_pod.add_argument("--format", default="yaml", choices=["yaml", "json"])
+
     p_event = sub.add_parser("event")
     p_event.add_argument("--portal-url", required=True)
     p_event.add_argument("--hmac-secret", required=True)
@@ -103,6 +125,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "resolve":
         cmd_resolve(args)
+    elif args.command == "pod-template":
+        cmd_pod_template(args)
     else:
         cmd_event(args)
     return 0
