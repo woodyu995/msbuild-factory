@@ -27,9 +27,24 @@
 | Partial unique on active `profile_hash` | `build_image_profile_hash_active_uidx` (Postgres + SQLite where) |
 | Actor auth | Bearer `PORTAL_API_TOKENS` + optional `PORTAL_REQUIRE_AUTH` (SSO still external IdP) |
 
+## Follow-up review fixes (2026-07-15)
+
+| Severity | Issue | Fix |
+|----------|-------|-----|
+| Critical | Factory `fetch` missing HMAC | Jenkinsfile passes `--hmac-secret`; agent accepts env fallback |
+| High | HMAC ambient in Windows project pod | `withCredentials` scoped per step; MSBuild has no HMAC |
+| High | Internal simulate ungated | `/internal/v1/simulate/*` requires HMAC |
+| High | Default actor was admin/operator | Default roles = `builder` only |
+| High | MSBuild `/p:` injection | Portal + PS1 allowlists for configuration/platform |
+| Medium | factory-artifacts unbound to lease | `leaseId` required + active CREATING/VALIDATING check |
+| Medium | Lease CAS ignored expiry | Status/heartbeat/artifacts reject expired leases |
+| Medium | Bearer length mismatch 500 | Length-safe token compare → 401 |
+
 ## Still external / ops-owned
 
 1. Wire Jenkins credentials `git-url-template`, `nuget-internal-feed-url`
 2. Point Portal at real git (`ls_remote` or `http_api`) and set `PORTAL_GIT_REQUIRE_EXACT=true` in prod
 3. Factory host: layouts/installers + Registry push ACL
 4. Corporate SSO in front of Portal (tokens are service-account bridge until then)
+5. Set `PORTAL_ALLOW_INSECURE_DEFAULTS=false` and strong HMAC in prod
+6. Local simulate UI: set `PORTAL_DEFAULT_ACTOR_ROLES=operator` or use operator Bearer token

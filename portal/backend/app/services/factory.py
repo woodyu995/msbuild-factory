@@ -333,9 +333,39 @@ def heartbeat_lease(session: Session, profile_hash: str, lease_id: str, extend_m
     image = get_active_image(session, profile_hash)
     if image is None:
         raise LookupError("image not found")
-    if image.lease_id != lease_id:
+    if not image.lease_id or image.lease_id != lease_id:
         raise PermissionError("stale leaseId")
-    image.lease_expires_at = utcnow() + timedelta(minutes=extend_minutes)
-    image.updated_at = utcnow()
+    now = utcnow()
+    expires = image.lease_expires_at
+    if expires is not None:
+        if expires.tzinfo is None:
+            from datetime import timezone
+
+            expires = expires.replace(tzinfo=timezone.utc)
+        if expires <= now:
+            raise PermissionError("lease expired")
+    image.lease_expires_at = now + timedelta(minutes=extend_minutes)
+    image.updated_at = now
     session.flush()
+    return image
+
+
+def require_active_factory_lease(session: Session, profile_hash: str, lease_id: str) -> BuildImage:
+    """Validate lease for factory-artifacts / privileged factory reads."""
+    image = get_active_image(session, profile_hash)
+    if image is None:
+        raise LookupError("image not found")
+    if image.status not in {"CREATING", "VALIDATING"}:
+        raise PermissionError("factory lease not active for this profile")
+    if not image.lease_id or image.lease_id != lease_id:
+        raise PermissionError("stale or missing leaseId")
+    now = utcnow()
+    expires = image.lease_expires_at
+    if expires is not None:
+        if expires.tzinfo is None:
+            from datetime import timezone
+
+            expires = expires.replace(tzinfo=timezone.utc)
+        if expires <= now:
+            raise PermissionError("lease expired")
     return image

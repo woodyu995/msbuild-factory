@@ -19,7 +19,8 @@ class Settings(BaseSettings):
     require_auth: bool = False
     api_tokens: str | None = None
     default_actor: str = "local-dev"
-    default_actor_roles: str = "admin,operator,builder"
+    # Default is builder-only; grant operator/admin via PORTAL_API_TOKENS or override for local sim.
+    default_actor_roles: str = "builder"
     # None = follow catalog.mvpFactoryEnabled; True/False overrides
     factory_enabled: bool | None = None
     factory_lease_minutes: int = 135

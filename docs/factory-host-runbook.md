@@ -51,7 +51,8 @@ python jenkins/shared-library/scripts/portal_factory_agent.py dry-run-all \
   --work-dir /tmp/factory-work
 ```
 
-`fetch` / `factory-artifacts` 는 HMAC 서명된 **POST** 이다.
+`fetch` / `factory-artifacts` / `heartbeat` / `finalize` 는 모두 HMAC 서명 + active `leaseId` 가 필요하다.
+(`PORTAL_HMAC_SECRET` env만 있어도 agent가 사용한다.)
 
 ## 5. 빌드 순서
 

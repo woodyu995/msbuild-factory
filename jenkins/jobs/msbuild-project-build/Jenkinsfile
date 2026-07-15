@@ -4,6 +4,9 @@
  *
  * Uses Portal /pod-template YAML and Windows helper scripts for checkout/restore/msbuild.
  * Scripts are read from this repo on the controller/agent, then written into the Windows pod workspace.
+ *
+ * Secrets are scoped with withCredentials around the steps that need them so
+ * checkout/MSBuild of untrusted project code does not see PORTAL_HMAC_SECRET.
  */
 pipeline {
   agent { label 'linux || built-in' }
@@ -19,9 +22,6 @@ pipeline {
 
   environment {
     PORTAL_BASE_URL = credentials('portal-base-url')
-    PORTAL_HMAC_SECRET = credentials('portal-callback-hmac')
-    GIT_URL_TEMPLATE = credentials('git-url-template')
-    NUGET_INTERNAL_FEED = credentials('nuget-internal-feed-url')
   }
 
   stages {
@@ -53,7 +53,6 @@ pipeline {
             error("resolvedCommit must be a 40-char SHA: ${meta.resolvedCommit}")
           }
 
-          // Load Windows tools from SCM (this job's checkout) before entering the Windows pod.
           def checkoutPs1 = readFile('jenkins/shared-library/scripts/windows/Checkout-Commit.ps1')
           def restorePs1 = readFile('jenkins/shared-library/scripts/windows/Restore-NuGet.ps1')
           def msbuildPs1 = readFile('jenkins/shared-library/scripts/windows/Invoke-MSBuild.ps1')
@@ -98,66 +97,90 @@ pipeline {
                   "PLATFORM=${meta.platform ?: 'x64'}",
                   "NUGET_MODE=${meta.nugetMode ?: 'repo-packages-and-internal-feed'}",
                 ]) {
+                  // Status: BUILDING (HMAC only for this step)
+                  withCredentials([string(credentialsId: 'portal-callback-hmac', variable: 'PORTAL_HMAC_SECRET')]) {
+                    powershell '''
+                      $tools = Join-Path $env:WORKSPACE "portal-tools"
+                      if (-not (Test-Path $tools)) { $tools = "portal-tools" }
+                      python $tools\\portal_project_agent.py `
+                        event `
+                        --portal-url $env:PORTAL_BASE_URL `
+                        --hmac-secret $env:PORTAL_HMAC_SECRET `
+                        --request-id $env:BUILD_REQUEST_ID `
+                        --event-type BUILDING `
+                        --message "Project build started" `
+                        --build-number $env:BUILD_NUMBER
+                    '''
+                  }
+
+                  // Checkout (git URL template only)
+                  withCredentials([string(credentialsId: 'git-url-template', variable: 'GIT_URL_TEMPLATE')]) {
+                    powershell '''
+                      $tools = Join-Path $env:WORKSPACE "portal-tools"
+                      if (-not (Test-Path $tools)) { $tools = "portal-tools" }
+                      powershell -File $tools\\windows\\Checkout-Commit.ps1 `
+                        -Repository $env:REPO `
+                        -Commit $env:COMMIT `
+                        -GitUrlTemplate $env:GIT_URL_TEMPLATE `
+                        -WorkDir C:\\workspace\\src
+                    '''
+                  }
+
+                  // Restore (NuGet feed only)
+                  withCredentials([string(credentialsId: 'nuget-internal-feed-url', variable: 'NUGET_INTERNAL_FEED')]) {
+                    powershell '''
+                      $tools = Join-Path $env:WORKSPACE "portal-tools"
+                      if (-not (Test-Path $tools)) { $tools = "portal-tools" }
+                      powershell -File $tools\\windows\\Restore-NuGet.ps1 `
+                        -WorkDir C:\\workspace\\src `
+                        -SolutionPath $env:SOLUTION `
+                        -NugetMode $env:NUGET_MODE `
+                        -InternalFeedUrl $env:NUGET_INTERNAL_FEED
+                    '''
+                  }
+
+                  // MSBuild — no Portal HMAC / git / nuget secrets in env
                   powershell '''
                     $tools = Join-Path $env:WORKSPACE "portal-tools"
-                    if (-not (Test-Path $tools)) {
-                      $tools = "portal-tools"
-                    }
-
-                    python $tools\\portal_project_agent.py `
-                      event `
-                      --portal-url $env:PORTAL_BASE_URL `
-                      --hmac-secret $env:PORTAL_HMAC_SECRET `
-                      --request-id $env:BUILD_REQUEST_ID `
-                      --event-type BUILDING `
-                      --message "Project build started" `
-                      --build-number $env:BUILD_NUMBER
-
-                    powershell -File $tools\\windows\\Checkout-Commit.ps1 `
-                      -Repository $env:REPO `
-                      -Commit $env:COMMIT `
-                      -GitUrlTemplate $env:GIT_URL_TEMPLATE `
-                      -WorkDir C:\\workspace\\src
-
-                    powershell -File $tools\\windows\\Restore-NuGet.ps1 `
-                      -WorkDir C:\\workspace\\src `
-                      -SolutionPath $env:SOLUTION `
-                      -NugetMode $env:NUGET_MODE `
-                      -InternalFeedUrl $env:NUGET_INTERNAL_FEED
-
+                    if (-not (Test-Path $tools)) { $tools = "portal-tools" }
                     powershell -File $tools\\windows\\Invoke-MSBuild.ps1 `
                       -WorkDir C:\\workspace\\src `
                       -SolutionPath $env:SOLUTION `
                       -Configuration $env:CONFIGURATION `
                       -Platform $env:PLATFORM
-
-                    python $tools\\portal_project_agent.py `
-                      event `
-                      --portal-url $env:PORTAL_BASE_URL `
-                      --hmac-secret $env:PORTAL_HMAC_SECRET `
-                      --request-id $env:BUILD_REQUEST_ID `
-                      --event-type TESTING `
-                      --message "Tests running" `
-                      --build-number $env:BUILD_NUMBER
-
-                    python $tools\\portal_project_agent.py `
-                      event `
-                      --portal-url $env:PORTAL_BASE_URL `
-                      --hmac-secret $env:PORTAL_HMAC_SECRET `
-                      --request-id $env:BUILD_REQUEST_ID `
-                      --event-type PUBLISHING `
-                      --message "Publishing artifacts" `
-                      --build-number $env:BUILD_NUMBER
-
-                    python $tools\\portal_project_agent.py `
-                      event `
-                      --portal-url $env:PORTAL_BASE_URL `
-                      --hmac-secret $env:PORTAL_HMAC_SECRET `
-                      --request-id $env:BUILD_REQUEST_ID `
-                      --event-type SUCCEEDED `
-                      --message "Project build succeeded" `
-                      --build-number $env:BUILD_NUMBER
                   '''
+
+                  // Terminal / progress events (HMAC scoped)
+                  withCredentials([string(credentialsId: 'portal-callback-hmac', variable: 'PORTAL_HMAC_SECRET')]) {
+                    powershell '''
+                      $tools = Join-Path $env:WORKSPACE "portal-tools"
+                      if (-not (Test-Path $tools)) { $tools = "portal-tools" }
+                      python $tools\\portal_project_agent.py `
+                        event `
+                        --portal-url $env:PORTAL_BASE_URL `
+                        --hmac-secret $env:PORTAL_HMAC_SECRET `
+                        --request-id $env:BUILD_REQUEST_ID `
+                        --event-type TESTING `
+                        --message "Tests running" `
+                        --build-number $env:BUILD_NUMBER
+                      python $tools\\portal_project_agent.py `
+                        event `
+                        --portal-url $env:PORTAL_BASE_URL `
+                        --hmac-secret $env:PORTAL_HMAC_SECRET `
+                        --request-id $env:BUILD_REQUEST_ID `
+                        --event-type PUBLISHING `
+                        --message "Publishing artifacts" `
+                        --build-number $env:BUILD_NUMBER
+                      python $tools\\portal_project_agent.py `
+                        event `
+                        --portal-url $env:PORTAL_BASE_URL `
+                        --hmac-secret $env:PORTAL_HMAC_SECRET `
+                        --request-id $env:BUILD_REQUEST_ID `
+                        --event-type SUCCEEDED `
+                        --message "Project build succeeded" `
+                        --build-number $env:BUILD_NUMBER
+                    '''
+                  }
                 }
               }
             }
@@ -169,18 +192,20 @@ pipeline {
 
   post {
     failure {
-      sh '''
-        if [ -n "$BUILD_REQUEST_ID" ] && [ -n "$PORTAL_BASE_URL" ]; then
-          python3 jenkins/shared-library/scripts/portal_project_agent.py \
-            event \
-            --portal-url "$PORTAL_BASE_URL" \
-            --hmac-secret "$PORTAL_HMAC_SECRET" \
-            --request-id "$BUILD_REQUEST_ID" \
-            --event-type PROJECT_BUILD_FAILED \
-            --message "Jenkins project pipeline failed" \
-            --build-number "$BUILD_NUMBER" || true
-        fi
-      '''
+      withCredentials([string(credentialsId: 'portal-callback-hmac', variable: 'PORTAL_HMAC_SECRET')]) {
+        sh '''
+          if [ -n "$BUILD_REQUEST_ID" ] && [ -n "$PORTAL_BASE_URL" ]; then
+            python3 jenkins/shared-library/scripts/portal_project_agent.py \
+              event \
+              --portal-url "$PORTAL_BASE_URL" \
+              --hmac-secret "$PORTAL_HMAC_SECRET" \
+              --request-id "$BUILD_REQUEST_ID" \
+              --event-type PROJECT_BUILD_FAILED \
+              --message "Jenkins project pipeline failed" \
+              --build-number "$BUILD_NUMBER" || true
+          fi
+        '''
+      }
     }
   }
 }

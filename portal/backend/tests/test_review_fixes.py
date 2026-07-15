@@ -25,6 +25,51 @@ def _client(tmp_path, **env):
     return TestClient(app)
 
 
+def test_expired_lease_status_callback_rejected(tmp_path):
+    with _client(tmp_path) as client:
+        created = client.post(
+            "/api/v1/build-requests",
+            json={
+                "project": {
+                    "repository": "ColdApp",
+                    "gitRef": "main",
+                    "solutionPath": "ColdApp.sln",
+                },
+                "environment": {
+                    "visualStudio": "2022",
+                    "dotnetFrameworks": ["4.8"],
+                    "dotnetSdks": [],
+                    "cppToolsets": ["v143"],
+                    "windowsSdks": ["10.0.22621.0"],
+                    "features": ["managed-desktop", "mfc"],
+                    "reuseMode": "exactReuse",
+                },
+            },
+        ).json()
+        profile_hash = created["requestedProfileHash"]
+        session = client.app.state.session_factory()
+        image = session.query(BuildImage).filter_by(profile_hash=profile_hash).one()
+        lease_id = image.lease_id
+        image.lease_expires_at = utcnow() - timedelta(minutes=1)
+        session.commit()
+        session.close()
+
+        body = {
+            "status": "FAILED",
+            "leaseId": lease_id,
+            "message": "too late",
+        }
+        raw = json.dumps(body).encode()
+        ts = str(int(time.time()))
+        sig = sign_body("dev-callback-secret-change-me", ts, raw)
+        resp = client.post(
+            f"/internal/v1/images/{profile_hash}/status",
+            content=raw,
+            headers={"Content-Type": "application/json", "X-Timestamp": ts, "X-Signature": sig},
+        )
+        assert resp.status_code == 409
+
+
 def test_null_lease_status_callback_rejected(tmp_path):
     with _client(tmp_path) as client:
         created = client.post(
@@ -95,7 +140,7 @@ def test_simulate_disabled_by_default(tmp_path):
         assert resp.status_code == 403
 
 
-def test_factory_artifacts_requires_hmac(tmp_path):
+def test_factory_artifacts_requires_hmac_and_lease(tmp_path):
     with _client(tmp_path) as client:
         created = client.post(
             "/api/v1/build-requests",
@@ -120,7 +165,24 @@ def test_factory_artifacts_requires_hmac(tmp_path):
         denied = client.post(f"/internal/v1/images/{profile_hash}/factory-artifacts", json={})
         assert denied.status_code == 401
 
+        session = client.app.state.session_factory()
+        image = session.query(BuildImage).filter_by(profile_hash=profile_hash).one()
+        lease_id = image.lease_id
+        session.close()
+
+        # HMAC ok but missing leaseId
         raw = b"{}"
+        ts = str(int(time.time()))
+        sig = sign_body("dev-callback-secret-change-me", ts, raw)
+        missing = client.post(
+            f"/internal/v1/images/{profile_hash}/factory-artifacts",
+            content=raw,
+            headers={"Content-Type": "application/json", "X-Timestamp": ts, "X-Signature": sig},
+        )
+        assert missing.status_code == 400
+
+        body = {"leaseId": lease_id}
+        raw = json.dumps(body).encode()
         ts = str(int(time.time()))
         sig = sign_body("dev-callback-secret-change-me", ts, raw)
         ok = client.post(
@@ -131,6 +193,18 @@ def test_factory_artifacts_requires_hmac(tmp_path):
         assert ok.status_code == 200
         assert "dockerfile" in ok.json()
 
+        # Stale lease
+        stale = {"leaseId": "not-the-lease"}
+        raw = json.dumps(stale).encode()
+        ts = str(int(time.time()))
+        sig = sign_body("dev-callback-secret-change-me", ts, raw)
+        bad = client.post(
+            f"/internal/v1/images/{profile_hash}/factory-artifacts",
+            content=raw,
+            headers={"Content-Type": "application/json", "X-Timestamp": ts, "X-Signature": sig},
+        )
+        assert bad.status_code == 409
+
 
 def test_solution_path_rejects_traversal():
     try:
@@ -139,6 +213,63 @@ def test_solution_path_rejects_traversal():
     except InvalidProjectInput:
         pass
     assert validate_solution_path("src/App.sln").endswith("App.sln")
+
+
+def test_configuration_platform_allowlist():
+    from app.domain.project_validation import validate_configuration, validate_platform
+
+    assert validate_configuration("Release") == "Release"
+    assert validate_platform("x64") == "x64"
+    try:
+        validate_configuration("Release /p:Evil=1")
+        assert False
+    except InvalidProjectInput:
+        pass
+    try:
+        validate_platform("x64;Evil")
+        assert False
+    except InvalidProjectInput:
+        pass
+
+
+def test_internal_simulate_requires_hmac(tmp_path):
+    with _client(tmp_path, simulate="true") as client:
+        denied = client.post("/internal/v1/simulate/build-requests/br-x/auto", json={})
+        assert denied.status_code == 401
+
+
+def test_api_simulate_denied_for_builder_role(tmp_path):
+    import os
+
+    os.environ["PORTAL_SIMULATE_WORKERS"] = "true"
+    os.environ["PORTAL_DEFAULT_ACTOR_ROLES"] = "builder"
+    os.environ["PORTAL_ALLOW_INSECURE_DEFAULTS"] = "true"
+    get_settings.cache_clear()
+    reset_jenkins_client()
+    app = create_app(database_url=f"sqlite:///{tmp_path / 'builder-sim.db'}")
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/build-requests",
+            json={
+                "project": {
+                    "repository": "ProductClient",
+                    "gitRef": "main",
+                    "solutionPath": "A.sln",
+                },
+                "environment": {
+                    "visualStudio": "2022",
+                    "dotnetFrameworks": ["4.8"],
+                    "dotnetSdks": ["8.0"],
+                    "cppToolsets": [],
+                    "windowsSdks": [],
+                    "features": ["managed-desktop"],
+                },
+            },
+        ).json()
+        resp = client.post(f"/api/v1/build-requests/{created['id']}/simulate")
+        assert resp.status_code == 403
+    get_settings.cache_clear()
+    os.environ.pop("PORTAL_DEFAULT_ACTOR_ROLES", None)
 
 
 def test_hmac_length_mismatch_is_401():

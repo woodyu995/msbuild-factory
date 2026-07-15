@@ -41,6 +41,7 @@ PYTHONPATH=. pytest -q
 | `PORTAL_GIT_REQUIRE_EXACT` | Reject placeholder commits (prod) |
 | `PORTAL_REQUIRE_AUTH` | Require `Authorization: Bearer …` |
 | `PORTAL_API_TOKENS` | `name:token:role1\|role2,…` |
+| `PORTAL_DEFAULT_ACTOR_ROLES` | Default when auth off (default `builder`; use `operator` for local Simulate UI) |
 | `PORTAL_SIMULATE_WORKERS` | Local auto-advance only |
 | `PORTAL_JENKINS_*` | Real Jenkins trigger |
 

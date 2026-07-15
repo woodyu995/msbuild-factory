@@ -51,11 +51,17 @@ def extract_bearer(authorization: str | None) -> str | None:
 
 def constant_time_token_lookup(tokens: dict[str, Actor], provided: str) -> Actor | None:
     # Avoid leaking which token matched via timing of dict get on long maps;
-    # still O(n) compare.
+    # still O(n) compare. Length mismatches must not raise (compare_digest ValueError).
     found: Actor | None = None
+    provided = provided or ""
     for token, actor in tokens.items():
-        if hmac.compare_digest(token, provided):
-            found = actor
+        if len(token) != len(provided):
+            continue
+        try:
+            if hmac.compare_digest(token, provided):
+                found = actor
+        except (TypeError, ValueError):
+            continue
     return found
 
 

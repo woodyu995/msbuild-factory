@@ -86,11 +86,18 @@ def test_factory_queue_waiter_and_ready_callback(tmp_path):
         jenkins = get_jenkins_client()
         assert any(job == "msbuild-image-factory" for job, _ in jenkins.calls)
 
-        # fetch artifacts
+        # load lease id
+        session = client.app.state.session_factory()
+        image = session.query(BuildImage).filter_by(profile_hash=profile_hash).one()
+        lease_id = image.lease_id
+        session.close()
+        assert lease_id
+
+        # fetch artifacts (HMAC + active lease)
         import time
         from app.security.hmac_auth import sign_body
 
-        raw = b"{}"
+        raw = json.dumps({"leaseId": lease_id}).encode()
         ts = str(int(time.time()))
         sig = sign_body("dev-callback-secret-change-me", ts, raw)
         arts = client.post(
@@ -105,13 +112,6 @@ def test_factory_queue_waiter_and_ready_callback(tmp_path):
         assert "FROM ${BASE_IMAGE}" in arts["dockerfile"]
         assert "Microsoft.Component.MSBuild" in arts["vsconfig"]["components"]
         assert arts["installManifest"]["visualStudio"]["generation"] == "2022"
-
-        # load lease id
-        session = client.app.state.session_factory()
-        image = session.query(BuildImage).filter_by(profile_hash=profile_hash).one()
-        lease_id = image.lease_id
-        session.close()
-        assert lease_id
 
         ready_body = {
             "status": "READY",

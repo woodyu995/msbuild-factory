@@ -27,7 +27,7 @@ from app.services.build_requests import (
     is_factory_enabled,
     list_events,
 )
-from app.services.factory import build_factory_artifacts, heartbeat_lease
+from app.services.factory import build_factory_artifacts, heartbeat_lease, require_active_factory_lease
 from app.services.image_resolve import apply_image_status_callback, resolve_image
 from app.services.reconcile import reconcile_expired_leases
 from app.services.simulation import auto_advance_request, simulate_factory_run, simulate_project_build
@@ -439,6 +439,16 @@ async def internal_image_status(profile_hash: str, request: Request, session: Se
 async def factory_artifacts(profile_hash: str, request: Request, session: SessionDep):
     raw = await request.body()
     _verify_callback(request, raw)
+    payload = json.loads(raw.decode("utf-8") or "{}")
+    lease_id = payload.get("leaseId")
+    if not lease_id:
+        raise HTTPException(status_code=400, detail="leaseId required")
+    try:
+        require_active_factory_lease(session, profile_hash, lease_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     profile = session.scalar(select(BuildProfile).where(BuildProfile.profile_hash == profile_hash))
     if profile is None:
         raise HTTPException(status_code=404, detail="profile not found")
@@ -485,7 +495,9 @@ def _require_simulation_enabled(request: Request, actor=None) -> None:
 
 
 @router.post("/internal/v1/simulate/factory/{profile_hash}")
-def simulate_factory(profile_hash: str, request: Request, session: SessionDep):
+async def simulate_factory(profile_hash: str, request: Request, session: SessionDep):
+    raw = await request.body()
+    _verify_callback(request, raw)
     _require_simulation_enabled(request)
     catalog = get_catalog(request)
     try:
@@ -497,7 +509,9 @@ def simulate_factory(profile_hash: str, request: Request, session: SessionDep):
 
 
 @router.post("/internal/v1/simulate/build-requests/{request_id}")
-def simulate_build(request_id: str, request: Request, session: SessionDep, fail: bool = False):
+async def simulate_build(request_id: str, request: Request, session: SessionDep, fail: bool = False):
+    raw = await request.body()
+    _verify_callback(request, raw)
     _require_simulation_enabled(request)
     try:
         return simulate_project_build(session, request_id=request_id, fail=fail)
@@ -508,7 +522,9 @@ def simulate_build(request_id: str, request: Request, session: SessionDep, fail:
 
 
 @router.post("/internal/v1/simulate/build-requests/{request_id}/auto")
-def simulate_auto(request_id: str, request: Request, session: SessionDep):
+async def simulate_auto(request_id: str, request: Request, session: SessionDep):
+    raw = await request.body()
+    _verify_callback(request, raw)
     _require_simulation_enabled(request)
     catalog = get_catalog(request)
     try:

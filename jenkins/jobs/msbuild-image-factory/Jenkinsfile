@@ -9,6 +9,9 @@
  *
  * Runs on a dedicated Windows factory node (label: msbuild-factory).
  * Does NOT block project builds with wait:true from an orchestrator.
+ *
+ * HMAC: prefer PORTAL_HMAC_SECRET env (credentials binding). Agent also
+ * accepts --hmac-secret; fetch must sign like all other factory calls.
  */
 pipeline {
   agent { label 'msbuild-factory' }
@@ -49,6 +52,7 @@ pipeline {
           python .\\jenkins\\shared-library\\scripts\\portal_factory_agent.py `
             fetch `
             --portal-url $env:PORTAL_BASE_URL `
+            --hmac-secret $env:PORTAL_HMAC_SECRET `
             --profile-hash $env:PROFILE_HASH `
             --lease-id $env:FACTORY_LEASE_ID `
             --work-dir .\\factory-work

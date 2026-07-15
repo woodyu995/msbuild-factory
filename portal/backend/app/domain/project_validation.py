@@ -12,6 +12,10 @@ class InvalidProjectInput(ValueError):
 
 _SOLUTION_RE = re.compile(r"^[A-Za-z0-9._\- /\\]+\.sln$")
 _REPO_RE = re.compile(r"^[A-Za-z0-9._\-]+(/[A-Za-z0-9._\-]+)*$")
+_CONFIG_RE = re.compile(r"^[A-Za-z0-9._\-]+$")
+_PLATFORM_RE = re.compile(r"^[A-Za-z0-9._\-]+$")
+_ALLOWED_CONFIGURATIONS = frozenset({"Debug", "Release", "RelWithDebInfo", "MinSizeRel"})
+_ALLOWED_PLATFORMS = frozenset({"x86", "x64", "AnyCPU", "Win32", "ARM64"})
 
 
 def validate_solution_path(path: str) -> str:
@@ -34,3 +38,25 @@ def validate_repository(name: str) -> str:
     if not _REPO_RE.match(value):
         raise InvalidProjectInput("repository has invalid characters")
     return value
+
+
+def validate_configuration(value: str | None) -> str:
+    config = (value or "Release").strip()
+    if not _CONFIG_RE.match(config):
+        raise InvalidProjectInput("configuration has invalid characters")
+    if config not in _ALLOWED_CONFIGURATIONS:
+        raise InvalidProjectInput(
+            f"configuration must be one of: {', '.join(sorted(_ALLOWED_CONFIGURATIONS))}"
+        )
+    return config
+
+
+def validate_platform(value: str | None) -> str:
+    platform = (value or "x64").strip()
+    if not _PLATFORM_RE.match(platform):
+        raise InvalidProjectInput("platform has invalid characters")
+    if platform not in _ALLOWED_PLATFORMS:
+        raise InvalidProjectInput(
+            f"platform must be one of: {', '.join(sorted(_ALLOWED_PLATFORMS))}"
+        )
+    return platform

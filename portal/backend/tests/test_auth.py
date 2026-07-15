@@ -97,6 +97,36 @@ def test_bearer_token_sets_actor(tmp_path, monkeypatch, _reset_env):
         session.close()
 
 
+def test_bearer_wrong_length_is_401(tmp_path, monkeypatch, _reset_env):
+    monkeypatch.setenv("PORTAL_REQUIRE_AUTH", "true")
+    monkeypatch.setenv("PORTAL_API_TOKENS", "alice:secret-token:builder")
+    monkeypatch.setenv("PORTAL_SIMULATE_WORKERS", "false")
+    get_settings.cache_clear()
+    app = create_app(database_url=f"sqlite:///{tmp_path / 'auth3.db'}")
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/v1/build-requests",
+            json={
+                "project": {
+                    "repository": "Demo",
+                    "gitRef": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "solutionPath": "Demo.sln",
+                },
+                "environment": {
+                    "visualStudio": "2022",
+                    "dotnetFrameworks": ["4.8"],
+                    "dotnetSdks": ["8.0"],
+                    "cppToolsets": [],
+                    "windowsSdks": [],
+                    "features": ["managed-desktop"],
+                    "reuseMode": "preferCompatible",
+                },
+            },
+            headers={"Authorization": "Bearer short"},
+        )
+        assert resp.status_code == 401
+
+
 def test_simulate_requires_operator_role_when_auth_on(tmp_path, monkeypatch, _reset_env):
     monkeypatch.setenv("PORTAL_SIMULATE_WORKERS", "true")
     monkeypatch.setenv("PORTAL_API_TOKENS", "bob:builder-tok:builder,op:op-tok:operator")

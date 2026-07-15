@@ -8,6 +8,12 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+function Escape-Xml([string]$value) {
+  if ($null -eq $value) { return "" }
+  return ($value -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;' -replace '"', '&quot;' -replace "'", '&apos;')
+}
+
 Push-Location $WorkDir
 try {
   $solution = Join-Path $WorkDir $SolutionPath
@@ -22,12 +28,16 @@ try {
   if ($NugetConfigPath) {
     Copy-Item -Force $NugetConfigPath (Join-Path $WorkDir "NuGet.config")
   } elseif ($InternalFeedUrl) {
+    if ($InternalFeedUrl -notmatch '^https?://') {
+      throw "InternalFeedUrl must be http(s) URL"
+    }
+    $safeUrl = Escape-Xml $InternalFeedUrl
     @"
 <?xml version="1.0" encoding="utf-8"?>
 <configuration>
   <packageSources>
     <clear />
-    <add key="internal" value="$InternalFeedUrl" />
+    <add key="internal" value="$safeUrl" />
   </packageSources>
 </configuration>
 "@ | Set-Content -Encoding UTF8 (Join-Path $WorkDir "NuGet.config")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -131,10 +132,16 @@ def apply_image_status_callback(
     )
     if row is None:
         raise LookupError("image not found")
-    # Lease CAS: mutating callbacks require an active lease that matches exactly.
+    # Lease CAS: mutating callbacks require an active, unexpired lease that matches exactly.
     if not row.lease_id or lease_id != row.lease_id:
         raise PermissionError("stale or missing leaseId")
     now = utcnow()
+    expires = row.lease_expires_at
+    if expires is not None:
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        if expires <= now:
+            raise PermissionError("lease expired")
     row.updated_at = now
     affected: list[str] = []
 

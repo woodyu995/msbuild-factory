@@ -54,11 +54,29 @@ def _request(
         raise SystemExit(f"HTTP {exc.code} {url}: {detail}") from exc
 
 
+def _resolve_hmac_secret(args: argparse.Namespace) -> str:
+    secret = (
+        getattr(args, "hmac_secret", None)
+        or os.environ.get("PORTAL_HMAC_SECRET")
+        or os.environ.get("PORTAL_CALLBACK_HMAC_SECRET")
+    )
+    if not secret:
+        raise SystemExit(
+            "HMAC secret required via --hmac-secret or PORTAL_HMAC_SECRET env"
+        )
+    return secret
+
+
 def cmd_fetch(args: argparse.Namespace) -> None:
     work = Path(args.work_dir)
     work.mkdir(parents=True, exist_ok=True)
     url = f"{args.portal_url.rstrip('/')}/internal/v1/images/{args.profile_hash}/factory-artifacts"
-    arts = _request("POST", url, body={}, hmac_secret=args.hmac_secret)
+    arts = _request(
+        "POST",
+        url,
+        body={"leaseId": args.lease_id},
+        hmac_secret=_resolve_hmac_secret(args),
+    )
     (work / "Dockerfile").write_text(arts["dockerfile"], encoding="utf-8")
     (work / "profile.vsconfig").write_text(
         json.dumps(arts["vsconfig"], indent=2), encoding="utf-8"
@@ -76,7 +94,7 @@ def cmd_heartbeat(args: argparse.Namespace) -> None:
         "POST",
         url,
         body={"leaseId": args.lease_id},
-        hmac_secret=args.hmac_secret,
+        hmac_secret=_resolve_hmac_secret(args),
     )
     print(json.dumps(result))
 
@@ -90,7 +108,7 @@ def cmd_event(args: argparse.Namespace, event_type: str, message: str) -> None:
         "eventType": event_type,
         "message": message,
     }
-    print(json.dumps(_request("POST", url, body=body, hmac_secret=args.hmac_secret)))
+    print(json.dumps(_request("POST", url, body=body, hmac_secret=_resolve_hmac_secret(args))))
 
 
 def cmd_build(args: argparse.Namespace) -> None:
@@ -256,7 +274,7 @@ def cmd_finalize(args: argparse.Namespace) -> None:
         "capabilityProfile": result["capabilityProfile"],
         "requestId": args.request_id,
     }
-    print(json.dumps(_request("POST", url, body=body, hmac_secret=args.hmac_secret)))
+    print(json.dumps(_request("POST", url, body=body, hmac_secret=_resolve_hmac_secret(args))))
 
 
 def cmd_fail(args: argparse.Namespace) -> None:
@@ -266,7 +284,7 @@ def cmd_fail(args: argparse.Namespace) -> None:
         "leaseId": args.lease_id,
         "message": args.message or "Factory failed",
     }
-    print(json.dumps(_request("POST", url, body=body, hmac_secret=args.hmac_secret)))
+    print(json.dumps(_request("POST", url, body=body, hmac_secret=_resolve_hmac_secret(args))))
 
 
 def cmd_dry_run_all(args: argparse.Namespace) -> None:
@@ -287,8 +305,9 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--lease-id", required=True)
         p.add_argument("--request-id", default="")
         p.add_argument("--work-dir", default="./factory-work")
+        # Optional CLI; falls back to PORTAL_HMAC_SECRET env (preferred on hosts).
         if need_hmac:
-            p.add_argument("--hmac-secret", required=True)
+            p.add_argument("--hmac-secret", default="")
 
     p_fetch = sub.add_parser("fetch")
     add_common(p_fetch, need_hmac=True)

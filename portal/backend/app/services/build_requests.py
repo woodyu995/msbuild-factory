@@ -13,6 +13,8 @@ from app.domain.profile_resolver import ProfileRejected
 from app.domain.git_resolve import GitResolveError
 from app.domain.project_validation import (
     InvalidProjectInput,
+    validate_configuration,
+    validate_platform,
     validate_repository,
     validate_solution_path,
 )
@@ -65,6 +67,8 @@ def create_build_request(
 
     repository = validate_repository(project["repository"])
     solution_path = validate_solution_path(project["solutionPath"])
+    configuration = validate_configuration(project.get("configuration"))
+    platform = validate_platform(project.get("platform"))
     git_ref = project["gitRef"]
     if git_resolver is None:
         from app.domain.git_resolve import PlaceholderGitResolver
@@ -80,8 +84,8 @@ def create_build_request(
         resolved_commit=resolved_commit,
         commit_resolution=commit_resolution,
         solution_path=solution_path,
-        configuration=project.get("configuration") or "Release",
-        platform=project.get("platform") or "x64",
+        configuration=configuration,
+        platform=platform,
         requested_profile_hash="",
         match_type="PENDING",
         reuse_mode=environment.get("reuseMode") or "preferCompatible",
