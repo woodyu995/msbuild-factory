@@ -54,6 +54,15 @@ Seed from `jenkins/README.md` Job DSL, or create Pipeline jobs pointing at:
 4. Set Portal `PORTAL_JENKINS_*`
 5. Set Portal git resolve to `ls_remote` or `http_api` and `PORTAL_GIT_REQUIRE_EXACT=true`
 6. Set `PORTAL_REQUIRE_AUTH=true` + `PORTAL_API_TOKENS`
-7. Disable `PORTAL_SIMULATE_WORKERS`
-8. Set `FACTORY_DRY_RUN=0` on factory host
-9. Create Jenkins credentials `git-url-template` and `nuget-internal-feed-url`
+7. Set `PORTAL_ALLOW_INSECURE_DEFAULTS=false` + strong HMAC
+8. Disable `PORTAL_SIMULATE_WORKERS`
+9. Set `FACTORY_DRY_RUN=0` on factory host
+10. Create Jenkins credentials `git-url-template` and `nuget-internal-feed-url`
+11. Seed `portal-lease-reconcile` job (cron HMAC reconcile)
+
+### Local smoke (no Windows)
+
+```bash
+cd portal/backend && pip install -r requirements.txt
+bash portal/scripts/smoke-cutover.sh
+```

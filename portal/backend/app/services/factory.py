@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.db.models import BuildImage, BuildImageCapability, BuildRequest, utcnow
+from app.db.models import BuildImage, BuildImageCapability, BuildRequest, FactoryControl, utcnow
 from app.domain.capability_matcher import capability_keys
 from app.domain.catalog import Catalog
 from app.domain.dockerfile_gen import (
@@ -65,6 +65,17 @@ def get_active_image(session: Session, profile_hash: str, *, for_update: bool = 
     return rows[0]
 
 
+def _lock_factory_slots(session: Session) -> None:
+    """Serialize global creating-slot checks across concurrent cold profiles."""
+    ctrl = session.get(FactoryControl, 1, with_for_update=True)
+    if ctrl is None:
+        session.add(FactoryControl(id=1))
+        session.flush()
+        ctrl = session.get(FactoryControl, 1, with_for_update=True)
+    assert ctrl is not None
+    ctrl.updated_at = utcnow()
+
+
 def acquire_or_wait_factory(
     session: Session,
     catalog: Catalog,
@@ -96,6 +107,9 @@ def acquire_or_wait_factory(
         )
         return "IMAGE_WAITING"
 
+    # New factory run path — lock global slot counter.
+    _lock_factory_slots(session)
+
     if existing and existing.status == "FAILED":
         # CAS retry: revive row
         if count_creating(session) >= MAX_GLOBAL_CREATING:
@@ -108,7 +122,7 @@ def acquire_or_wait_factory(
         existing.failure_code = None
         existing.updated_at = utcnow()
         image = existing
-    elif existing and existing.status in {"QUARANTINED"}:
+    elif existing and existing.status == "QUARANTINED":
         request.status = "PROFILE_REJECTED"
         request.error_code = "IMAGE_QUARANTINED"
         request.error_message = "Matched profile image is quarantined"

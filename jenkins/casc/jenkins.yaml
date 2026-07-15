@@ -43,6 +43,16 @@ credentials:
               id: portal-callback-hmac
               secret: "${PORTAL_CALLBACK_HMAC_SECRET}"
               description: "HMAC secret shared with Portal"
+          - string:
+              scope: GLOBAL
+              id: git-url-template
+              secret: "https://git.internal/{repository}.git"
+              description: "Git clone URL template for project builds"
+          - string:
+              scope: GLOBAL
+              id: nuget-internal-feed-url
+              secret: "https://nuget.internal/v3/index.json"
+              description: "Internal NuGet feed for Windows restore"
           - usernamePassword:
               scope: GLOBAL
               id: portal-jenkins-api

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from typing import Any
@@ -7,7 +8,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import BuildEvent, BuildRequest, utcnow
+from app.db.models import BuildEvent, BuildImage, BuildRequest, utcnow
 from app.domain.catalog import Catalog
 from app.domain.profile_resolver import ProfileRejected
 from app.domain.git_resolve import GitResolveError
@@ -29,12 +30,23 @@ from app.services.image_resolve import (
     factory_enabled,
     resolve_image,
 )
-from app.db.models import BuildImage
+
+
+class IdempotencyConflict(Exception):
+    def __init__(self, message: str = "Idempotency-Key reused with different payload"):
+        super().__init__(message)
+        self.code = "IDEMPOTENCY_CONFLICT"
+        self.message = message
 
 
 def _new_request_id() -> str:
     stamp = utcnow().strftime("%Y%m%d")
     return f"br-{stamp}-{uuid.uuid4().hex[:6]}"
+
+
+def payload_fingerprint(payload: dict[str, Any]) -> str:
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def create_build_request(
@@ -47,11 +59,17 @@ def create_build_request(
     factory_enabled_override: bool | None = None,
     git_resolver=None,
 ) -> BuildRequest:
+    fingerprint = payload_fingerprint(payload)
     if idempotency_key:
         existing = session.scalar(
             select(BuildRequest).where(BuildRequest.idempotency_key == idempotency_key)
         )
         if existing:
+            if existing.idempotency_payload_hash and existing.idempotency_payload_hash != fingerprint:
+                raise IdempotencyConflict()
+            # Legacy rows without hash: accept once and backfill.
+            if not existing.idempotency_payload_hash:
+                existing.idempotency_payload_hash = fingerprint
             return existing
 
     project = payload["project"]
@@ -93,6 +111,7 @@ def create_build_request(
         status="REQUESTED",
         requested_by=actor,
         idempotency_key=idempotency_key,
+        idempotency_payload_hash=fingerprint,
         environment_json=json.dumps(environment, ensure_ascii=False),
     )
     session.add(request)

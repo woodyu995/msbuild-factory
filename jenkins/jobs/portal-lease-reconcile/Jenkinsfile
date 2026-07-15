@@ -1,0 +1,43 @@
+#!/usr/bin/env groovy
+/**
+ * portal-lease-reconcile
+ *
+ * Periodically POSTs HMAC-signed reconcile to Portal so expired factory
+ * leases are cleared without relying on ad-hoc ops curls.
+ */
+pipeline {
+  agent { label 'linux || built-in' }
+
+  options {
+    timestamps()
+    disableConcurrentBuilds()
+    timeout(time: 5, unit: MINUTES)
+  }
+
+  triggers {
+    cron('H/5 * * * *')
+  }
+
+  environment {
+    PORTAL_BASE_URL = credentials('portal-base-url')
+    PORTAL_HMAC_SECRET = credentials('portal-callback-hmac')
+  }
+
+  stages {
+    stage('Reconcile expired leases') {
+      steps {
+        sh '''
+          set -euo pipefail
+          export TS=$(date +%s)
+          SIG=$(python3 -c "import hashlib,hmac,os; s=os.environ['PORTAL_HMAC_SECRET']; t=os.environ['TS']; print(hmac.new(s.encode(), (t+'.').encode()+b'{}', hashlib.sha256).hexdigest())")
+          curl -fsS -X POST \
+            -H "Content-Type: application/json" \
+            -H "X-Timestamp: ${TS}" \
+            -H "X-Signature: ${SIG}" \
+            --data '{}' \
+            "${PORTAL_BASE_URL%/}/internal/v1/reconcile/leases"
+        '''
+      }
+    }
+  }
+}

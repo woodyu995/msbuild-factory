@@ -21,6 +21,7 @@ from app.domain.project_validation import InvalidProjectInput
 from app.domain.git_resolve import GitResolveError
 from app.security.hmac_auth import CallbackAuthError, verify_hmac
 from app.services.build_requests import (
+    IdempotencyConflict,
     apply_build_event_callback,
     create_build_request,
     get_build_request,
@@ -154,7 +155,10 @@ def _request_to_response(row, session: Session) -> BuildRequestResponse:
 
 
 @router.get("/api/v1/build-environment/options")
-def options(request: Request):
+def options(
+    request: Request,
+    actor: Annotated[object, Depends(actor_from_headers)],
+):
     catalog = get_catalog(request)
     settings = get_settings(request)
     visual_studios = []
@@ -183,11 +187,17 @@ def options(request: Request):
         "estimatedImageBuildMinutes": catalog.estimated_minutes,
         "mvpFactoryEnabled": is_factory_enabled(catalog, settings),
         "simulateWorkers": settings.simulate_workers,
+        "requireAuth": settings.require_auth,
     }
 
 
 @router.post("/api/v1/build-environment/validate", response_model=ValidateResponse)
-def validate(body: ValidateRequest, request: Request, session: SessionDep):
+def validate(
+    body: ValidateRequest,
+    request: Request,
+    session: SessionDep,
+    actor: Annotated[object, Depends(actor_from_headers)],
+):
     catalog = get_catalog(request)
     settings = get_settings(request)
     env = body.environment.model_dump()
@@ -265,6 +275,8 @@ def create_request(
         )
     except ProfileRejected as exc:
         raise HTTPException(status_code=400, detail={"code": exc.code, "message": exc.message}) from exc
+    except IdempotencyConflict as exc:
+        raise HTTPException(status_code=409, detail={"code": exc.code, "message": exc.message}) from exc
     except (InvalidProjectInput, GitResolveError) as exc:
         raise HTTPException(status_code=400, detail={"code": exc.code, "message": exc.message}) from exc
 
@@ -280,7 +292,11 @@ def create_request(
 
 
 @router.get("/api/v1/build-requests/{request_id}", response_model=BuildRequestResponse)
-def get_request(request_id: str, session: SessionDep):
+def get_request(
+    request_id: str,
+    session: SessionDep,
+    actor: Annotated[object, Depends(actor_from_headers)],
+):
     row = get_build_request(session, request_id)
     if row is None:
         raise HTTPException(status_code=404, detail="build request not found")
@@ -288,7 +304,12 @@ def get_request(request_id: str, session: SessionDep):
 
 
 @router.get("/api/v1/build-requests/{request_id}/pod-template")
-def get_pod_template(request_id: str, session: SessionDep, format: str = "yaml"):
+def get_pod_template(
+    request_id: str,
+    session: SessionDep,
+    actor: Annotated[object, Depends(actor_from_headers)],
+    format: str = "yaml",
+):
     from fastapi.responses import PlainTextResponse, JSONResponse
     from app.domain.pod_template import render_windows_builder_pod, render_windows_builder_pod_yaml
 
@@ -319,7 +340,12 @@ def get_pod_template(request_id: str, session: SessionDep, format: str = "yaml")
 
 
 @router.get("/api/v1/build-requests/{request_id}/events")
-async def request_events(request_id: str, request: Request, session: SessionDep):
+async def request_events(
+    request_id: str,
+    request: Request,
+    session: SessionDep,
+    actor: Annotated[object, Depends(actor_from_headers)],
+):
     from fastapi.responses import StreamingResponse
     import asyncio
 

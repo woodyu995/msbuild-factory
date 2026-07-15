@@ -30,6 +30,8 @@ Tests:
 ```bash
 cd portal/backend
 PYTHONPATH=. pytest -q
+# cutover smoke (in-process TestClient, no live server needed):
+bash ../scripts/smoke-cutover.sh
 ```
 
 ### Key env vars

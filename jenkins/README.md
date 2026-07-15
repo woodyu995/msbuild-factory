@@ -62,6 +62,30 @@ pipelineJob('msbuild-project-build') {
 - `portal-base-url`
 - `portal-callback-hmac`
 - `portal-jenkins-api` (Portal → Jenkins trigger)
+- `git-url-template` (project checkout)
+- `nuget-internal-feed-url` (Windows restore)
+
+## Jobs (additional)
+
+| Job | Purpose |
+|-----|---------|
+| `portal-lease-reconcile` | Cron every ~5m → HMAC reconcile expired factory leases |
+
+```groovy
+pipelineJob('portal-lease-reconcile') {
+  definition {
+    cpsScm {
+      scm {
+        git {
+          remote { url('https://git.internal/msbuild-factory.git') }
+          branches('*/main')
+        }
+      }
+      scriptPath('jenkins/jobs/portal-lease-reconcile/Jenkinsfile')
+    }
+  }
+}
+```
 
 ## Agents
 

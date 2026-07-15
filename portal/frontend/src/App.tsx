@@ -31,6 +31,7 @@ type Options = {
   }>;
   mvpFactoryEnabled: boolean;
   simulateWorkers?: boolean;
+  requireAuth?: boolean;
 };
 
 type ValidateResult = {
@@ -66,8 +67,28 @@ const emptyEnv: Environment = {
   reuseMode: "preferCompatible",
 };
 
+const TOKEN_KEY = "portalApiToken";
+
 function toggle(list: string[], value: string): string[] {
   return list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
+}
+
+function loadToken(): string {
+  return (
+    localStorage.getItem(TOKEN_KEY) ||
+    import.meta.env.VITE_PORTAL_API_TOKEN ||
+    ""
+  );
+}
+
+function apiHeaders(extra: Record<string, string> = {}, token: string): HeadersInit {
+  const headers: Record<string, string> = { ...extra };
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  } else {
+    headers["X-Actor"] = "portal-ui";
+  }
+  return headers;
 }
 
 export default function App() {
@@ -80,17 +101,27 @@ export default function App() {
     configuration: "Release",
     platform: "x64",
   });
+  const [apiToken, setApiToken] = useState(loadToken);
   const [validateResult, setValidateResult] = useState<ValidateResult | null>(null);
   const [buildResult, setBuildResult] = useState<BuildRequest | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    fetch("/api/v1/build-environment/options")
-      .then((r) => r.json())
+    localStorage.setItem(TOKEN_KEY, apiToken);
+  }, [apiToken]);
+
+  useEffect(() => {
+    fetch("/api/v1/build-environment/options", {
+      headers: apiHeaders({}, apiToken),
+    })
+      .then(async (r) => {
+        if (!r.ok) throw new Error(await r.text());
+        return r.json();
+      })
       .then(setOptions)
       .catch((err) => setError(String(err)));
-  }, []);
+  }, [apiToken]);
 
   useEffect(() => {
     if (!buildResult?.id) return;
@@ -104,13 +135,15 @@ export default function App() {
     ]);
     if (terminal.has(buildResult.status)) return;
     const timer = window.setInterval(() => {
-      fetch(`/api/v1/build-requests/${buildResult.id}`)
+      fetch(`/api/v1/build-requests/${buildResult.id}`, {
+        headers: apiHeaders({}, apiToken),
+      })
         .then((r) => r.json())
         .then((data) => setBuildResult(data))
         .catch(() => undefined);
     }, 1500);
     return () => window.clearInterval(timer);
-  }, [buildResult?.id, buildResult?.status]);
+  }, [buildResult?.id, buildResult?.status, apiToken]);
 
   const vs = useMemo(
     () => options?.visualStudios.find((item) => item.id === env.visualStudio),
@@ -123,10 +156,14 @@ export default function App() {
     try {
       const resp = await fetch("/api/v1/build-environment/validate", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: apiHeaders({ "Content-Type": "application/json" }, apiToken),
         body: JSON.stringify({ environment: env }),
       });
       const data = await resp.json();
+      if (!resp.ok) {
+        setError(data?.detail?.message || JSON.stringify(data));
+        return;
+      }
       setValidateResult(data);
     } catch (err) {
       setError(String(err));
@@ -141,11 +178,13 @@ export default function App() {
     try {
       const resp = await fetch("/api/v1/build-requests", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Idempotency-Key": crypto.randomUUID(),
-          "X-Actor": "portal-ui",
-        },
+        headers: apiHeaders(
+          {
+            "Content-Type": "application/json",
+            "Idempotency-Key": crypto.randomUUID(),
+          },
+          apiToken,
+        ),
         body: JSON.stringify({
           project,
           environment: env,
@@ -172,13 +211,16 @@ export default function App() {
     try {
       const resp = await fetch(`/api/v1/build-requests/${buildResult.id}/simulate`, {
         method: "POST",
+        headers: apiHeaders({}, apiToken),
       });
       const data = await resp.json();
       if (!resp.ok) {
-        setError(data?.detail || JSON.stringify(data));
+        setError(typeof data?.detail === "string" ? data.detail : JSON.stringify(data));
         return;
       }
-      const refreshed = await fetch(`/api/v1/build-requests/${buildResult.id}`);
+      const refreshed = await fetch(`/api/v1/build-requests/${buildResult.id}`, {
+        headers: apiHeaders({}, apiToken),
+      });
       setBuildResult(await refreshed.json());
     } catch (err) {
       setError(String(err));
@@ -196,12 +238,27 @@ export default function App() {
           매칭합니다. Factory/Project Worker가 없으면 Simulate로 로컬 완료 경로를
           실행할 수 있습니다.
           {options?.simulateWorkers ? " (auto-simulate ON)" : ""}
+          {options?.requireAuth ? " · auth required" : ""}
         </p>
       </header>
 
       <div className="grid">
         <section className="panel">
           <h2>빌드 환경</h2>
+          <div className="field">
+            <label>API token (Bearer)</label>
+            <input
+              type="password"
+              value={apiToken}
+              placeholder="optional unless PORTAL_REQUIRE_AUTH"
+              onChange={(e) => setApiToken(e.target.value)}
+              autoComplete="off"
+            />
+            <p className="hint">
+              Simulate는 operator/admin 역할 토큰이 필요합니다. 값은 localStorage에만
+              보관됩니다.
+            </p>
+          </div>
           {options && (
             <div className="presets">
               {options.presets.map((preset) => (
