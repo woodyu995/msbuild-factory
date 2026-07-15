@@ -115,6 +115,8 @@ with TestClient(app) as client:
                 "solutionPath": "ColdApp.sln",
             },
             "environment": cold_env,
+            "matchedProfileHash": profile,
+            "imageDigest": "sha256:pending-not-ready",
         },
     )
     assert denied.status_code == 409, denied.text

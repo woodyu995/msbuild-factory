@@ -90,6 +90,8 @@ def test_factory_queue_waiter_and_ready_callback(tmp_path):
                     "solutionPath": "ColdApp.sln",
                 },
                 "environment": COLD_ENV,
+                "matchedProfileHash": profile_hash,
+                "imageDigest": "sha256:pending-not-ready",
             },
         )
         assert denied.status_code == 409
@@ -217,6 +219,8 @@ def test_reconcile_expired_lease(tmp_path):
                     "solutionPath": "ColdApp.sln",
                 },
                 "environment": COLD_ENV,
+                "matchedProfileHash": profile_hash,
+                "imageDigest": "sha256:pending-expired",
             },
         )
         assert denied.status_code == 409

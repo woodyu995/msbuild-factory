@@ -137,18 +137,22 @@ export default function App() {
       .catch((err) => setError(String(err)));
   }, [apiToken]);
 
-  // Poll image until READY after ensure
+  // Poll image until READY after ensure (only when a factory row exists)
   useEffect(() => {
-    const hash = ensureResult?.matchedProfileHash || ensureResult?.requestedProfileHash;
+    const hash = ensureResult?.matchedProfileHash;
     if (!hash || ensureResult?.ready) return;
-    if (!["CREATING", "VALIDATING", "BUSY"].includes(ensureResult?.imageStatus || "")) return;
+    if (!["CREATING", "VALIDATING"].includes(ensureResult?.imageStatus || "")) return;
 
     const timer = window.setInterval(() => {
       fetch(`/api/v1/images/${hash}`, {
         headers: apiHeaders({}, apiToken),
       })
-        .then((r) => r.json())
+        .then(async (r) => {
+          if (!r.ok) return;
+          return r.json();
+        })
         .then((data) => {
+          if (!data) return;
           setEnsureResult((prev) =>
             prev
               ? {
@@ -168,7 +172,6 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [
     ensureResult?.matchedProfileHash,
-    ensureResult?.requestedProfileHash,
     ensureResult?.ready,
     ensureResult?.imageStatus,
     apiToken,
@@ -213,7 +216,13 @@ export default function App() {
       });
       const data = await resp.json();
       if (!resp.ok) {
-        setError(detailMessage(data));
+        const msg = detailMessage(data);
+        if (resp.status === 503) {
+          setError(`${msg} — Ensure를 다시 눌러 재시도하세요.`);
+        } else {
+          setError(msg);
+        }
+        setEnsureResult(null);
         return;
       }
       setEnsureResult(data);

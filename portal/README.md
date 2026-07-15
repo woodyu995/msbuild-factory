@@ -65,7 +65,7 @@ UI proxies `/api` to `http://127.0.0.1:8000`.
 
 1. `POST /api/v1/images/ensure` with environment → reuse READY or start factory
 2. Poll `GET /api/v1/images/{profileHash}` until `ready: true` (or Simulate factory)
-3. `POST /api/v1/build-requests` with project + environment (+ optional `matchedProfileHash` / `imageDigest`) → `BUILD_QUEUED`
+3. `POST /api/v1/build-requests` with project + environment + required `matchedProfileHash` / `imageDigest` → `BUILD_QUEUED`
 4. Click **Simulate project** in UI, or:
    ```bash
    curl -X POST http://127.0.0.1:8000/api/v1/build-requests/{id}/simulate

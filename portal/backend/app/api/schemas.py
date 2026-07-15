@@ -36,13 +36,13 @@ class NugetInfo(BaseModel):
 
 
 class BuildRequestCreate(BaseModel):
-    """Start a project build. Requires a READY image (call /images/ensure first)."""
+    """Start a project build. Requires a READY image pin from /images/ensure."""
 
     project: ProjectInfo
     environment: EnvironmentSelection
     nuget: NugetInfo = Field(default_factory=NugetInfo)
-    matchedProfileHash: str | None = None
-    imageDigest: str | None = None
+    matchedProfileHash: str = Field(min_length=16)
+    imageDigest: str = Field(min_length=8)
 
 
 class EnsureImageRequest(BaseModel):

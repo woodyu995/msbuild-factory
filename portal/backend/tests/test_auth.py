@@ -50,6 +50,8 @@ def test_require_auth_rejects_missing_token(tmp_path, monkeypatch, _reset_env):
                     "features": ["managed-desktop"],
                     "reuseMode": "preferCompatible",
                 },
+                "matchedProfileHash": "a" * 64,
+                "imageDigest": "sha256:preset-placeholder",
             },
             headers={"X-Actor": "spoofed"},
         )
@@ -57,37 +59,36 @@ def test_require_auth_rejects_missing_token(tmp_path, monkeypatch, _reset_env):
 
 
 def test_bearer_token_sets_actor(tmp_path, monkeypatch, _reset_env):
+    from tests.helpers import HOT_ENV, build_payload
+
     monkeypatch.setenv("PORTAL_REQUIRE_AUTH", "true")
     monkeypatch.setenv("PORTAL_API_TOKENS", "alice:secret-token:builder")
     monkeypatch.setenv("PORTAL_SIMULATE_WORKERS", "false")
     get_settings.cache_clear()
     app = create_app(database_url=f"sqlite:///{tmp_path / 'auth2.db'}")
     with TestClient(app) as client:
+        ensured = client.post(
+            "/api/v1/images/ensure",
+            json={"environment": HOT_ENV},
+            headers={"Authorization": "Bearer secret-token"},
+        ).json()
+        assert ensured["ready"] is True
         resp = client.post(
             "/api/v1/build-requests",
-            json={
-                "project": {
+            json=build_payload(
+                ensured=ensured,
+                project={
                     "repository": "Demo",
                     "gitRef": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "solutionPath": "Demo.sln",
                 },
-                "environment": {
-                    "visualStudio": "2022",
-                    "dotnetFrameworks": ["4.8"],
-                    "dotnetSdks": ["8.0"],
-                    "cppToolsets": [],
-                    "windowsSdks": [],
-                    "features": ["managed-desktop"],
-                    "reuseMode": "preferCompatible",
-                },
-            },
+            ),
             headers={"Authorization": "Bearer secret-token"},
         )
         assert resp.status_code == 200
         data = resp.json()
         assert data["commitResolution"] == "exact"
         assert data["resolvedCommit"] == "a" * 40
-        # actor stored on request
         from sqlalchemy import select
         from app.db.models import BuildRequest
 
@@ -98,6 +99,8 @@ def test_bearer_token_sets_actor(tmp_path, monkeypatch, _reset_env):
 
 
 def test_bearer_wrong_length_is_401(tmp_path, monkeypatch, _reset_env):
+    from tests.helpers import HOT_ENV
+
     monkeypatch.setenv("PORTAL_REQUIRE_AUTH", "true")
     monkeypatch.setenv("PORTAL_API_TOKENS", "alice:secret-token:builder")
     monkeypatch.setenv("PORTAL_SIMULATE_WORKERS", "false")
@@ -112,15 +115,9 @@ def test_bearer_wrong_length_is_401(tmp_path, monkeypatch, _reset_env):
                     "gitRef": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "solutionPath": "Demo.sln",
                 },
-                "environment": {
-                    "visualStudio": "2022",
-                    "dotnetFrameworks": ["4.8"],
-                    "dotnetSdks": ["8.0"],
-                    "cppToolsets": [],
-                    "windowsSdks": [],
-                    "features": ["managed-desktop"],
-                    "reuseMode": "preferCompatible",
-                },
+                "environment": HOT_ENV,
+                "matchedProfileHash": "a" * 64,
+                "imageDigest": "sha256:preset-placeholder",
             },
             headers={"Authorization": "Bearer short"},
         )
@@ -128,30 +125,30 @@ def test_bearer_wrong_length_is_401(tmp_path, monkeypatch, _reset_env):
 
 
 def test_simulate_requires_operator_role_when_auth_on(tmp_path, monkeypatch, _reset_env):
+    from tests.helpers import HOT_ENV, build_payload
+
     monkeypatch.setenv("PORTAL_SIMULATE_WORKERS", "true")
     monkeypatch.setenv("PORTAL_API_TOKENS", "bob:builder-tok:builder,op:op-tok:operator")
     monkeypatch.setenv("PORTAL_REQUIRE_AUTH", "false")
     get_settings.cache_clear()
     app = create_app(database_url=f"sqlite:///{tmp_path / 'sim.db'}")
     with TestClient(app) as client:
+        ensured = client.post(
+            "/api/v1/images/ensure",
+            json={"environment": HOT_ENV},
+            headers={"Authorization": "Bearer builder-tok"},
+        ).json()
+        assert ensured["ready"] is True
         created = client.post(
             "/api/v1/build-requests",
-            json={
-                "project": {
+            json=build_payload(
+                ensured=ensured,
+                project={
                     "repository": "Demo",
                     "gitRef": "main",
                     "solutionPath": "Demo.sln",
                 },
-                "environment": {
-                    "visualStudio": "2022",
-                    "dotnetFrameworks": ["4.8"],
-                    "dotnetSdks": ["8.0"],
-                    "cppToolsets": [],
-                    "windowsSdks": [],
-                    "features": ["managed-desktop"],
-                    "reuseMode": "preferCompatible",
-                },
-            },
+            ),
             headers={"Authorization": "Bearer builder-tok"},
         ).json()
         denied = client.post(

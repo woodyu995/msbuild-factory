@@ -31,28 +31,23 @@ def test_pod_template_api(tmp_path, monkeypatch):
     from app.main import create_app
     from app.services.jenkins import reset_jenkins_client
     from fastapi.testclient import TestClient
+    from tests.helpers import HOT_ENV, build_payload, ensure_ready
 
     get_settings.cache_clear()
     reset_jenkins_client()
     app = create_app(database_url=f"sqlite:///{tmp_path / 'pod.db'}")
     with TestClient(app) as client:
+        ensured = ensure_ready(client, HOT_ENV)
         created = client.post(
             "/api/v1/build-requests",
-            json={
-                "project": {
+            json=build_payload(
+                ensured=ensured,
+                project={
                     "repository": "ProductClient",
                     "gitRef": "release/2.1",
                     "solutionPath": "ProductClient.sln",
                 },
-                "environment": {
-                    "visualStudio": "2022",
-                    "dotnetFrameworks": ["4.8"],
-                    "dotnetSdks": ["8.0"],
-                    "cppToolsets": [],
-                    "windowsSdks": [],
-                    "features": ["managed-desktop"],
-                },
-            },
+            ),
         ).json()
         assert created["status"] == "BUILD_QUEUED"
         yaml_text = client.get(f"/api/v1/build-requests/{created['id']}/pod-template").text

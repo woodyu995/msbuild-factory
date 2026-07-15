@@ -31,8 +31,8 @@ from app.services.build_requests import (
     is_factory_enabled,
     list_events,
 )
-from app.services.factory import build_factory_artifacts, heartbeat_lease, require_active_factory_lease
-from app.services.image_ensure import ensure_image, get_image_status
+from app.services.factory import FactoryBusy, build_factory_artifacts, heartbeat_lease, require_active_factory_lease
+from app.services.image_ensure import ImageQuarantined, ensure_image, get_image_status
 from app.services.image_resolve import apply_image_status_callback, resolve_image
 from app.services.reconcile import reconcile_expired_leases
 from app.services.simulation import auto_advance_request, simulate_factory_run, simulate_project_build
@@ -276,9 +276,34 @@ def ensure_image_endpoint(
             factory_enabled_override=settings.factory_enabled,
         )
     except ProfileRejected as exc:
-        raise HTTPException(status_code=400, detail={"code": exc.code, "message": exc.message}) from exc
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": exc.code,
+                "message": exc.message,
+            },
+        ) from exc
+    except FactoryBusy as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "FACTORY_BUSY",
+                "message": str(exc),
+                "retryable": True,
+            },
+        ) from exc
+    except ImageQuarantined as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": exc.code,
+                "message": exc.message,
+                "matchedProfileHash": exc.profile_hash,
+            },
+        ) from exc
 
-    if result.matched_profile_hash:
+    # Only the creator schedules local factory simulation (not joiners).
+    if result.factory_phase == "CREATING" and result.matched_profile_hash:
         maybe_schedule_factory_simulate(
             background_tasks=background_tasks,
             settings=settings,

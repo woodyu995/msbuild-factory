@@ -12,6 +12,14 @@ from app.services.factory import FactoryBusy, get_active_image, start_or_join_fa
 from app.services.image_resolve import ensure_profile_row, resolve_image
 
 
+class ImageQuarantined(Exception):
+    def __init__(self, message: str = "Profile image is quarantined", *, profile_hash: str | None = None):
+        super().__init__(message)
+        self.code = "IMAGE_QUARANTINED"
+        self.message = message
+        self.profile_hash = profile_hash
+
+
 @dataclass
 class EnsureImageResult:
     requested_profile_hash: str
@@ -27,8 +35,10 @@ class EnsureImageResult:
     factory_lease_id: str | None
     error_code: str | None = None
     error_message: str | None = None
+    factory_phase: str | None = None  # CREATING | WAITING | READY | None
 
     def to_dict(self) -> dict[str, Any]:
+        ready_statuses = {"READY", "DEPRECATED"}
         return {
             "requestedProfileHash": self.requested_profile_hash,
             "matchedProfileHash": self.matched_profile_hash,
@@ -43,7 +53,8 @@ class EnsureImageResult:
             "factoryLeaseId": self.factory_lease_id,
             "errorCode": self.error_code,
             "errorMessage": self.error_message,
-            "ready": self.image_status == "READY" and self.image is not None,
+            "ready": self.image_status in ready_statuses and self.image is not None,
+            "factoryPhase": self.factory_phase,
         }
 
 
@@ -55,6 +66,10 @@ def _image_ref(row: BuildImage) -> dict[str, str]:
     }
 
 
+def _digest_usable(digest: str | None) -> bool:
+    return bool(digest) and not str(digest).startswith("sha256:pending-")
+
+
 def ensure_image(
     session: Session,
     catalog: Catalog,
@@ -63,7 +78,14 @@ def ensure_image(
     actor: str,
     factory_enabled_override: bool | None = None,
 ) -> EnsureImageResult:
-    """Step 1: reuse READY image or start factory. Does not start project build."""
+    """Step 1: reuse READY image or start factory. Does not start project build.
+
+    Hard failures raise:
+      ProfileRejected — factory disabled / profile rejected
+      FactoryBusy — global factory slots full (caller should retry)
+      ImageQuarantined — profile image quarantined
+    In-progress creation returns with ready=false (HTTP 200).
+    """
     resolved, match, action = resolve_image(
         session,
         catalog,
@@ -74,76 +96,44 @@ def ensure_image(
 
     if match is not None:
         row = get_active_image(session, match.candidate.profile_hash)
+        status = match.candidate.status
+        ref = (
+            _image_ref(row)
+            if row
+            else {
+                "repository": match.candidate.repository,
+                "tag": match.candidate.tag,
+                "digest": match.candidate.image_digest,
+            }
+        )
         return EnsureImageResult(
             requested_profile_hash=resolved.profile_hash,
             matched_profile_hash=match.candidate.profile_hash,
             match_type=match.match_type,
             action=action,
-            image_status=match.candidate.status,
+            image_status=status,
             estimated_wait_minutes=0,
             provided_capabilities=list(match.provided_capabilities),
             extra_capabilities=list(match.extra_capabilities),
-            image=_image_ref(row) if row else {
-                "repository": match.candidate.repository,
-                "tag": match.candidate.tag,
-                "digest": match.candidate.image_digest,
-            },
+            image=ref if _digest_usable(ref.get("digest")) else None,
             windows_base=resolved.windows_base,
             factory_lease_id=None,
+            factory_phase="READY",
         )
 
     if action == "REJECTED":
-        return EnsureImageResult(
-            requested_profile_hash=resolved.profile_hash,
-            matched_profile_hash=None,
-            match_type=None,
-            action=action,
-            image_status="NOT_CREATED",
-            estimated_wait_minutes=0,
-            provided_capabilities=[],
-            extra_capabilities=[],
-            image=None,
-            windows_base=resolved.windows_base,
-            factory_lease_id=None,
-            error_code="IMAGE_CREATION_REQUIRED",
-            error_message="No compatible READY image and factory is disabled",
+        raise ProfileRejected(
+            "No compatible READY image and factory is disabled",
+            code="PROFILE_REJECTED",
         )
 
     try:
         image, phase = start_or_join_factory(session, catalog, resolved=resolved)
-    except FactoryBusy as exc:
-        return EnsureImageResult(
-            requested_profile_hash=resolved.profile_hash,
-            matched_profile_hash=None,
-            match_type=None,
-            action="FACTORY_BUSY",
-            image_status="BUSY",
-            estimated_wait_minutes=int(catalog.estimated_minutes.get("coldAverage", 75)),
-            provided_capabilities=[],
-            extra_capabilities=[],
-            image=None,
-            windows_base=resolved.windows_base,
-            factory_lease_id=None,
-            error_code="FACTORY_BUSY",
-            error_message=str(exc),
-        )
+    except FactoryBusy:
+        raise
 
     if phase == "QUARANTINED":
-        return EnsureImageResult(
-            requested_profile_hash=resolved.profile_hash,
-            matched_profile_hash=image.profile_hash,
-            match_type=None,
-            action="REJECTED",
-            image_status="QUARANTINED",
-            estimated_wait_minutes=0,
-            provided_capabilities=[],
-            extra_capabilities=[],
-            image=None,
-            windows_base=image.windows_base,
-            factory_lease_id=None,
-            error_code="IMAGE_QUARANTINED",
-            error_message="Profile image is quarantined",
-        )
+        raise ImageQuarantined(profile_hash=image.profile_hash)
 
     if phase == "READY":
         return EnsureImageResult(
@@ -155,9 +145,10 @@ def ensure_image(
             estimated_wait_minutes=0,
             provided_capabilities=[],
             extra_capabilities=[],
-            image=_image_ref(image),
+            image=_image_ref(image) if _digest_usable(image.image_digest) else None,
             windows_base=image.windows_base,
             factory_lease_id=None,
+            factory_phase="READY",
         )
 
     wait = int(catalog.estimated_minutes.get("coldAverage", 75))
@@ -173,6 +164,7 @@ def ensure_image(
         image=None,
         windows_base=image.windows_base,
         factory_lease_id=image.lease_id,
+        factory_phase=phase,
     )
 
 
@@ -180,9 +172,7 @@ def get_image_status(session: Session, profile_hash: str) -> dict[str, Any]:
     row = get_active_image(session, profile_hash)
     if row is None:
         raise LookupError("image not found")
-    ready = row.status == "READY" and bool(row.image_digest) and not row.image_digest.startswith(
-        "sha256:pending-"
-    )
+    ready = row.status in {"READY", "DEPRECATED"} and _digest_usable(row.image_digest)
     return {
         "profileHash": row.profile_hash,
         "imageStatus": row.status,

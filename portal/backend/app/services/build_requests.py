@@ -122,7 +122,31 @@ def create_build_request(
     resolved_git = git_resolver.resolve(repository, git_ref)
     resolved_commit, commit_resolution = resolved_git.commit, resolved_git.mode
 
-    # Resolve image before creating the request — start-build never runs factory.
+    # Resolve + pin before creating the request — start-build never runs factory.
+    client_hash = payload.get("matchedProfileHash")
+    client_digest = payload.get("imageDigest")
+    if not client_hash or not client_digest:
+        raise ImageNotReady(
+            "matchedProfileHash and imageDigest are required (from POST /api/v1/images/ensure)",
+            code="IMAGE_REF_REQUIRED",
+        )
+
+    pinned = get_active_image(session, client_hash)
+    if pinned is None or pinned.status not in {"READY", "DEPRECATED"}:
+        status = pinned.status if pinned else "NOT_CREATED"
+        raise ImageNotReady(
+            f"Pinned image is not READY (status={status}); call POST /api/v1/images/ensure",
+            requested_profile_hash=client_hash,
+            image_status=status,
+        )
+    if pinned.image_digest != client_digest:
+        raise ImageNotReady(
+            "imageDigest does not match pinned READY image",
+            code="IMAGE_REF_MISMATCH",
+            requested_profile_hash=client_hash,
+            image_status=pinned.status,
+        )
+
     resolved, match, action = resolve_image(
         session,
         catalog,
@@ -130,9 +154,6 @@ def create_build_request(
         factory_enabled_override=factory_enabled_override,
     )
     ensure_profile_row(session, catalog, resolved, actor)
-
-    client_hash = payload.get("matchedProfileHash")
-    client_digest = payload.get("imageDigest")
 
     if match is None:
         inflight = get_active_image(session, resolved.profile_hash)
@@ -147,29 +168,15 @@ def create_build_request(
             image_status=status,
         )
 
-    image = get_active_image(session, match.candidate.profile_hash)
-    if image is None or image.status not in {"READY", "DEPRECATED"}:
-        status = image.status if image else "NOT_CREATED"
+    if match.candidate.profile_hash != client_hash:
         raise ImageNotReady(
-            f"Matched image is not READY (status={status})",
+            "matchedProfileHash is not a valid Exact/Compatible match for this environment",
+            code="IMAGE_REF_MISMATCH",
             requested_profile_hash=resolved.profile_hash,
-            image_status=status,
+            image_status=pinned.status,
         )
 
-    if client_hash and client_hash != image.profile_hash:
-        raise ImageNotReady(
-            f"matchedProfileHash mismatch: expected {image.profile_hash}",
-            code="IMAGE_REF_MISMATCH",
-            requested_profile_hash=resolved.profile_hash,
-            image_status=image.status,
-        )
-    if client_digest and client_digest != image.image_digest:
-        raise ImageNotReady(
-            "imageDigest does not match READY image",
-            code="IMAGE_REF_MISMATCH",
-            requested_profile_hash=resolved.profile_hash,
-            image_status=image.status,
-        )
+    image = pinned
 
     request = BuildRequest(
         id=_new_request_id(),
