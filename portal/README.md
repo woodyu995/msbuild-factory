@@ -1,14 +1,16 @@
-# Portal (Phase 0/1 + Factory orchestration)
+# Portal (Phase 0/1 + Factory orchestration + local simulation)
 
-Implements the revised design foundation and phase-2 factory control plane:
+Implements the revised design control plane and a local end-to-end simulation path:
 
 - Component catalog (`catalog/catalog.yaml`)
 - Profile resolver + canonical profile hash
 - Capability Exact / Superset matcher
 - Build request APIs + HMAC internal callbacks
 - Seeded Hot Preset READY images
-- On-demand Image Factory lock/lease/waiters (Jenkins stub)
+- On-demand Image Factory lock/lease/waiters
 - Dockerfile / `.vsconfig` / install manifest generation
+- Local Factory/Project **worker simulation** (manual or `PORTAL_SIMULATE_WORKERS=true`)
+- Optional real Jenkins HTTP trigger (`PORTAL_JENKINS_*`)
 - Minimal React UI
 
 ## Backend
@@ -16,6 +18,8 @@ Implements the revised design foundation and phase-2 factory control plane:
 ```bash
 cd portal/backend
 pip install -r requirements.txt
+# optional local demo auto-complete:
+# export PORTAL_SIMULATE_WORKERS=true
 PYTHONPATH=. uvicorn app.main:app --reload --port 8000
 ```
 
@@ -36,11 +40,18 @@ npm run dev
 
 UI proxies `/api` to `http://127.0.0.1:8000`.
 
+## Local complete path
+
+1. Submit build request (Preset reuse → `BUILD_QUEUED`, cold → `IMAGE_BUILD_QUEUED`)
+2. Click **Simulate workers** in UI, or:
+   ```bash
+   curl -X POST http://127.0.0.1:8000/api/v1/build-requests/{id}/simulate
+   ```
+3. Request advances to `SUCCEEDED` with simulated image digest
+
 ## Scope notes
 
-- `mvpFactoryEnabled: true` — cold profiles queue `msbuild-image-factory` (Jenkins stub)
-- Exact waiters share one CREATING lease; READY callback wakes them to project build
-- Factory artifacts: `GET /internal/v1/images/{hash}/factory-artifacts`
-- Lease heartbeat + reconcile endpoints for callback loss / TTL expiry
-- Windows Docker build host is still external (scripts under `image_factory/scripts`)
+- Simulation does **not** run Windows Docker/MSBuild; it completes Portal state transitions
+- Real Jenkins: set `PORTAL_JENKINS_URL`, `PORTAL_JENKINS_USERNAME`, `PORTAL_JENKINS_API_TOKEN`
+- Windows Factory host / K8s Pod build remain external
 - SSO/RBAC is not wired; send optional `X-Actor`

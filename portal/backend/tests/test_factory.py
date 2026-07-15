@@ -14,6 +14,9 @@ from app.services.jenkins import get_jenkins_client, reset_jenkins_client
 
 
 def _client(tmp_path):
+    import os
+
+    os.environ["PORTAL_SIMULATE_WORKERS"] = "false"
     get_settings.cache_clear()
     reset_jenkins_client()
     db_path = tmp_path / "factory.db"

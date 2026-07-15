@@ -30,6 +30,7 @@ type Options = {
     };
   }>;
   mvpFactoryEnabled: boolean;
+  simulateWorkers?: boolean;
 };
 
 type ValidateResult = {
@@ -91,6 +92,26 @@ export default function App() {
       .catch((err) => setError(String(err)));
   }, []);
 
+  useEffect(() => {
+    if (!buildResult?.id) return;
+    const terminal = new Set([
+      "SUCCEEDED",
+      "PROFILE_REJECTED",
+      "PROJECT_BUILD_FAILED",
+      "TEST_FAILED",
+      "CANCELLED",
+      "IMAGE_BUILD_FAILED",
+    ]);
+    if (terminal.has(buildResult.status)) return;
+    const timer = window.setInterval(() => {
+      fetch(`/api/v1/build-requests/${buildResult.id}`)
+        .then((r) => r.json())
+        .then((data) => setBuildResult(data))
+        .catch(() => undefined);
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [buildResult?.id, buildResult?.status]);
+
   const vs = useMemo(
     () => options?.visualStudios.find((item) => item.id === env.visualStudio),
     [options, env.visualStudio],
@@ -144,13 +165,37 @@ export default function App() {
     }
   }
 
+  async function onSimulate() {
+    if (!buildResult?.id) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const resp = await fetch(`/api/v1/build-requests/${buildResult.id}/simulate`, {
+        method: "POST",
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        setError(data?.detail || JSON.stringify(data));
+        return;
+      }
+      const refreshed = await fetch(`/api/v1/build-requests/${buildResult.id}`);
+      setBuildResult(await refreshed.json());
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="app">
       <header className="brand">
         <h1>MSBuild Build Portal</h1>
         <p>
           승인된 빌드 도구를 선택하면 Exact 또는 Capability Superset 이미지로
-          매칭합니다. MVP는 Hot Preset READY 이미지만 사용합니다.
+          매칭합니다. Factory/Project Worker가 없으면 Simulate로 로컬 완료 경로를
+          실행할 수 있습니다.
+          {options?.simulateWorkers ? " (auto-simulate ON)" : ""}
         </p>
       </header>
 
@@ -269,6 +314,14 @@ export default function App() {
             <button className="primary" type="button" disabled={busy} onClick={onSubmit}>
               Submit build request
             </button>
+            {buildResult &&
+              !["SUCCEEDED", "PROFILE_REJECTED", "CANCELLED", "IMAGE_BUILD_FAILED", "PROJECT_BUILD_FAILED", "TEST_FAILED"].includes(
+                buildResult.status,
+              ) && (
+                <button className="secondary" type="button" disabled={busy} onClick={onSimulate}>
+                  Simulate workers
+                </button>
+              )}
           </div>
           {error && <div className="error">{error}</div>}
         </section>
