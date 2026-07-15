@@ -23,7 +23,7 @@ spec:
     - name: internal-registry-secret
   containers:
     - name: builder
-      image: registry.internal/build/msbuild-profile@sha256:REPLACE_ME
+      image: nexus.company.io/build/msbuild-profile@sha256:REPLACE_ME
       imagePullPolicy: IfNotPresent
       workingDir: C:\workspace
       resources:

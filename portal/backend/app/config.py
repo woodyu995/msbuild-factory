@@ -37,6 +37,14 @@ class Settings(BaseSettings):
     git_http_base_url: str | None = None
     git_token: str | None = None
     git_require_exact: bool = False
+    # Nexus (or other) Docker registry — factory pushes images here
+    # e.g. nexus.nexus.svc.cluster.local:8082 or nexus.company.io
+    registry_host: str = "nexus.company.io"
+    registry_final_repo: str = "build/msbuild-profile"
+    registry_staging_repo: str = "build/msbuild-profile-staging"
+    registry_pull_secret: str = "nexus-docker-pull"
+    # Comma-separated CORS origins; empty = allow all (dev only)
+    cors_origins: str = "*"
 
     @property
     def is_default_hmac_secret(self) -> bool:

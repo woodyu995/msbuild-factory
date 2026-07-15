@@ -181,11 +181,29 @@ def cmd_build(args: argparse.Namespace) -> None:
     if built.returncode != 0:
         raise SystemExit(f"docker build failed: {built.stderr or built.stdout}")
 
-    # Promote staging -> final tag locally, push, then prefer registry RepoDigest.
+    # Promote staging -> final tag locally, login to Nexus if configured, then push.
     subprocess.run(["docker", "tag", staging_tag, final_tag], check=True)
+
+    nexus_user = os.environ.get("NEXUS_DOCKER_USER") or os.environ.get("REGISTRY_USER")
+    nexus_pass = os.environ.get("NEXUS_DOCKER_PASSWORD") or os.environ.get("REGISTRY_PASSWORD")
+    registry_host = (arts.get("registryHost") or os.environ.get("NEXUS_REGISTRY_HOST") or "").strip()
+    if nexus_user and nexus_pass and registry_host:
+        login = subprocess.run(
+            ["docker", "login", registry_host, "-u", nexus_user, "--password-stdin"],
+            input=nexus_pass,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if login.returncode != 0:
+            raise SystemExit(f"docker login to Nexus failed: {login.stderr or login.stdout}")
+
+    # Also push staging (optional audit trail) then final.
+    if os.environ.get("FACTORY_PUSH_STAGING", "").lower() in {"1", "true", "yes"}:
+        subprocess.run(["docker", "push", staging_tag], check=False)
     push = subprocess.run(["docker", "push", final_tag], check=False, capture_output=True, text=True)
     if push.returncode != 0:
-        raise SystemExit(f"docker push failed: {push.stderr or push.stdout}")
+        raise SystemExit(f"docker push to Nexus failed: {push.stderr or push.stdout}")
 
     digest = ""
     inspect = subprocess.run(

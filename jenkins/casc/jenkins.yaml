@@ -36,8 +36,8 @@ credentials:
           - string:
               scope: GLOBAL
               id: portal-base-url
-              secret: "https://build-portal.internal"
-              description: "Build Portal base URL"
+              secret: "http://portal.msbuild-portal.svc.cluster.local"
+              description: "Build Portal Service DNS (in-cluster)"
           - string:
               scope: GLOBAL
               id: portal-callback-hmac
@@ -56,8 +56,14 @@ credentials:
           - string:
               scope: GLOBAL
               id: nuget-internal-feed-url
-              secret: "https://nuget.internal/v3/index.json"
-              description: "Internal NuGet feed for Windows restore"
+              secret: "https://nexus.company.io/repository/nuget-hosted/index.json"
+              description: "Nexus NuGet feed for Windows restore"
+          - usernamePassword:
+              scope: GLOBAL
+              id: nexus-docker
+              username: "ci-push"
+              password: "${NEXUS_DOCKER_PASSWORD}"
+              description: "Nexus Docker push (factory host)"
           - usernamePassword:
               scope: GLOBAL
               id: portal-jenkins-api

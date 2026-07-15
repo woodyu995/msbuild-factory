@@ -62,12 +62,14 @@ python jenkins/shared-library/scripts/portal_factory_agent.py dry-run-all \
 4. `finalize` — READY + capabilityProfile Callback  
    실패 시 `fail`
 
-### 실빌드 (non-dry-run)
+### 실빌드 (non-dry-run) → Nexus push
 
 ```bash
 export IMAGE_FACTORY_LAYOUT_ROOT=\\storage\vs-layouts
 export IMAGE_FACTORY_INSTALLER_ROOT=\\storage\installers
 export FACTORY_DRY_RUN=0
+export NEXUS_REGISTRY_HOST=nexus.company.io:8082
+# Jenkins provides NEXUS_DOCKER_USER / NEXUS_DOCKER_PASSWORD via nexus-docker credential
 
 python jenkins/shared-library/scripts/portal_factory_agent.py build \
   --portal-url https://portal.internal \
@@ -78,8 +80,10 @@ python jenkins/shared-library/scripts/portal_factory_agent.py build \
   --work-dir D:\factory-work\<PROFILE_HASH>
 ```
 
-요구사항: Docker Engine(Windows containers), Registry login, Layout/Installer 경로 존재.  
-`build`는 staging tag로 `docker build` → final tag → `docker push` → RepoDigest 수집 후 `result.json`에 기록한다.
+요구사항: Docker Engine(Windows containers), **Nexus docker login**, Layout/Installer 경로 존재.  
+`build`는 staging tag로 `docker build` → final tag → `docker login` → `docker push` → RepoDigest 수집 후 `result.json`에 기록한다.
+
+Portal `PORTAL_REGISTRY_HOST` / `PORTAL_REGISTRY_FINAL_REPO` 가 artifacts의 repository 경로를 결정한다.
 
 ## 6. OS 호환
 

@@ -169,7 +169,7 @@ def acquire_or_wait_factory(
         tag = f"vs{resolved.vs_generation}-{resolved.profile_hash[:12]}"
         image = BuildImage(
             profile_hash=resolved.profile_hash,
-            image_repository="registry.internal/build/msbuild-profile",
+            image_repository=_registry().final_image,
             image_tag=tag,
             image_digest=f"sha256:pending-{resolved.profile_hash[:16]}",
             status="CREATING",
@@ -308,14 +308,23 @@ def queue_project_build(
     session.flush()
 
 
+def _registry():
+    from app.config import get_settings
+    from app.domain.registry import registry_from_settings
+
+    return registry_from_settings(get_settings())
+
+
 def build_factory_artifacts(resolved_build_input: dict[str, Any], profile_hash: str) -> dict[str, Any]:
+    reg = _registry()
     return {
         "profileHash": profile_hash,
         "dockerfile": generate_dockerfile(resolved_build_input, profile_hash=profile_hash),
         "vsconfig": generate_vsconfig(resolved_build_input),
         "installManifest": generate_install_manifest(resolved_build_input),
-        "stagingRepository": "registry.internal/build/msbuild-profile-staging",
-        "finalRepository": "registry.internal/build/msbuild-profile",
+        "stagingRepository": reg.staging_image,
+        "finalRepository": reg.final_image,
+        "registryHost": reg.host,
         "imageTag": f"vs{resolved_build_input['visualStudio']['generation']}-{profile_hash[:12]}",
     }
 

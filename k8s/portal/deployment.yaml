@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: portal
+  namespace: msbuild-portal
+  labels:
+    app.kubernetes.io/name: portal
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: portal
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: portal
+    spec:
+      containers:
+        - name: portal
+          image: nexus.company.io/build/msbuild-portal:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: portal-config
+            - secretRef:
+                name: portal-secrets
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      imagePullSecrets:
+        - name: nexus-docker-pull
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: portal
+  namespace: msbuild-portal
+  labels:
+    app.kubernetes.io/name: portal
+spec:
+  selector:
+    app.kubernetes.io/name: portal
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+# Optional in-cluster lease reconcile (preferred over Jenkins-only cron)
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: portal-lease-reconcile
+  namespace: msbuild-portal
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: reconcile
+              image: python:3.12-slim
+              envFrom:
+                - secretRef:
+                    name: portal-secrets
+              env:
+                - name: PORTAL_URL
+                  value: "http://portal.msbuild-portal.svc.cluster.local"
+              command:
+                - python
+                - -c
+                - |
+                  import hashlib, hmac, os, time, urllib.request
+                  secret = os.environ["PORTAL_CALLBACK_HMAC_SECRET"]
+                  url = os.environ["PORTAL_URL"].rstrip("/") + "/internal/v1/reconcile/leases"
+                  body = b"{}"
+                  ts = str(int(time.time()))
+                  sig = hmac.new(secret.encode(), (ts + ".").encode() + body, hashlib.sha256).hexdigest()
+                  req = urllib.request.Request(
+                      url, data=body, method="POST",
+                      headers={"Content-Type": "application/json", "X-Timestamp": ts, "X-Signature": sig},
+                  )
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      print(resp.read().decode())

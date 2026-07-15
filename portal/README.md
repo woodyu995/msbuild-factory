@@ -46,6 +46,10 @@ bash ../scripts/smoke-cutover.sh
 | `PORTAL_DEFAULT_ACTOR_ROLES` | Default when auth off (default `builder`; use `operator` for local Simulate UI) |
 | `PORTAL_SIMULATE_WORKERS` | Local auto-advance only |
 | `PORTAL_JENKINS_*` | Real Jenkins trigger |
+| `PORTAL_DATABASE_URL` | Postgres URL (`postgresql+psycopg://…`) in cluster |
+| `PORTAL_REGISTRY_HOST` | Nexus docker connector host:port |
+| `PORTAL_REGISTRY_FINAL_REPO` | e.g. `build/msbuild-profile` |
+| `PORTAL_REGISTRY_STAGING_REPO` | e.g. `build/msbuild-profile-staging` |
 
 ## Frontend
 

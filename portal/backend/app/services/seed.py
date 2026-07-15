@@ -9,7 +9,14 @@ from app.db.models import BuildImage, BuildImageCapability, utcnow
 from app.domain.capability_matcher import capability_keys
 from app.domain.catalog import Catalog
 from app.domain.profile_resolver import resolve_profile
+from app.domain.registry import registry_from_settings
 from app.services.image_resolve import capability_from_environment, ensure_profile_row
+
+
+def _default_image_repository() -> str:
+    from app.config import get_settings
+
+    return registry_from_settings(get_settings()).final_image
 
 
 def seed_preset_images(session: Session, catalog: Catalog, actor: str = "seed") -> list[str]:
@@ -36,7 +43,7 @@ def seed_preset_images(session: Session, catalog: Catalog, actor: str = "seed") 
         digest = f"sha256:preset-{preset['id']}-{resolved.profile_hash[:16]}"
         image = existing or BuildImage(
             profile_hash=resolved.profile_hash,
-            image_repository="registry.internal/build/msbuild-profile",
+            image_repository=_default_image_repository(),
             image_tag=tag,
             image_digest=digest,
             status="READY",

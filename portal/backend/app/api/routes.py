@@ -306,12 +306,14 @@ def get_request(
 @router.get("/api/v1/build-requests/{request_id}/pod-template")
 def get_pod_template(
     request_id: str,
+    request: Request,
     session: SessionDep,
     actor: Annotated[object, Depends(actor_from_headers)],
     format: str = "yaml",
 ):
     from fastapi.responses import PlainTextResponse, JSONResponse
     from app.domain.pod_template import render_windows_builder_pod, render_windows_builder_pod_yaml
+    from app.domain.registry import registry_from_settings
 
     row = get_build_request(session, request_id)
     if row is None:
@@ -320,20 +322,19 @@ def get_pod_template(
     if not response.imageDigest:
         raise HTTPException(status_code=409, detail="image digest not resolved yet")
     windows_base = response.windowsBase or "ltsc2022"
+    reg = registry_from_settings(get_settings(request))
+    pod_kwargs = dict(
+        image_digest=response.imageDigest,
+        windows_base=windows_base,
+        request_id=request_id,
+        pull_secret_name=reg.pull_secret_name,
+        registry_host=reg.host,
+        registry_final_repo=reg.final_repository,
+    )
     try:
         if format == "json":
-            return JSONResponse(
-                render_windows_builder_pod(
-                    image_digest=response.imageDigest,
-                    windows_base=windows_base,
-                    request_id=request_id,
-                )
-            )
-        yaml_text = render_windows_builder_pod_yaml(
-            image_digest=response.imageDigest,
-            windows_base=windows_base,
-            request_id=request_id,
-        )
+            return JSONResponse(render_windows_builder_pod(**pod_kwargs))
+        yaml_text = render_windows_builder_pod_yaml(**pod_kwargs)
         return PlainTextResponse(yaml_text, media_type="application/yaml")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

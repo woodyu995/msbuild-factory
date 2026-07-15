@@ -24,8 +24,9 @@ spec:
   containers:
     - name: builder
       # Replace digest at runtime from Portal resolve
-      image: registry.internal/build/msbuild-profile@sha256:REPLACE_ME
+      image: nexus.company.io/build/msbuild-profile@sha256:REPLACE_ME
       imagePullPolicy: IfNotPresent
+      # imagePullSecrets: nexus-docker-pull (set at pod/serviceaccount level)
       workingDir: C:\workspace
       resources:
         requests:
