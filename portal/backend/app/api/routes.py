@@ -72,6 +72,7 @@ def actor_from_headers(
 
 def _request_to_response(row, session: Session) -> BuildRequestResponse:
     image = None
+    windows_base = None
     if row.image_digest and row.matched_profile_hash:
         from sqlalchemy import select
         from app.db.models import BuildImage
@@ -85,8 +86,20 @@ def _request_to_response(row, session: Session) -> BuildRequestResponse:
                 tag=img.image_tag,
                 digest=img.image_digest,
             )
+            windows_base = img.windows_base
+    elif row.matched_profile_hash:
+        from sqlalchemy import select
+        from app.db.models import BuildImage
+
+        img = session.scalar(
+            select(BuildImage).where(BuildImage.profile_hash == row.matched_profile_hash)
+        )
+        if img:
+            windows_base = img.windows_base
+
     provided = json.loads(row.provided_capabilities_json or "[]")
     extra = json.loads(row.extra_capabilities_json or "[]")
+    environment = json.loads(row.environment_json) if row.environment_json else None
     return BuildRequestResponse(
         id=row.id,
         status=row.status,
@@ -109,6 +122,8 @@ def _request_to_response(row, session: Session) -> BuildRequestResponse:
         errorCode=row.error_code,
         errorMessage=row.error_message,
         image=image,
+        windowsBase=windows_base,
+        environment=environment,
     )
 
 

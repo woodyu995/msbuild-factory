@@ -85,6 +85,8 @@ class BuildRequestResponse(BaseModel):
     errorCode: str | None = None
     errorMessage: str | None = None
     image: ImageRef | None = None
+    windowsBase: str | None = None
+    environment: dict[str, Any] | None = None
 
 
 class InternalBuildEvent(BaseModel):

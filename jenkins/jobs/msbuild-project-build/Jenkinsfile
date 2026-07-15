@@ -1,0 +1,200 @@
+#!/usr/bin/env groovy
+/**
+ * msbuild-project-build
+ *
+ * Parameters:
+ *   BUILD_REQUEST_ID
+ *
+ * Assumes Portal already resolved a READY image digest.
+ * Runs on Windows Kubernetes agent via Kubernetes plugin / pod template.
+ */
+pipeline {
+  agent none
+
+  options {
+    timestamps()
+    timeout(time: 2, unit: HOURS)
+  }
+
+  parameters {
+    string(name: 'BUILD_REQUEST_ID', defaultValue: '', description: 'Portal build request id')
+  }
+
+  environment {
+    PORTAL_BASE_URL = credentials('portal-base-url')
+    PORTAL_HMAC_SECRET = credentials('portal-callback-hmac')
+  }
+
+  stages {
+    stage('Resolve request') {
+      agent { label 'linux || built-in' }
+      steps {
+        script {
+          if (!params.BUILD_REQUEST_ID?.trim()) {
+            error('BUILD_REQUEST_ID is required')
+          }
+          def meta = powershell(returnStdout: true, script: """
+            python .\\jenkins\\shared-library\\scripts\\portal_project_agent.py `
+              resolve `
+              --portal-url \$env:PORTAL_BASE_URL `
+              --request-id \$env:BUILD_REQUEST_ID
+          """).trim()
+          writeFile file: 'request-meta.json', text: meta
+          def parsed = readJSON file: 'request-meta.json'
+          env.IMAGE_DIGEST = parsed.imageDigest
+          env.WINDOWS_RELEASE = parsed.windowsBase ?: 'ltsc2022'
+          env.REPO = parsed.repository
+          env.COMMIT = parsed.resolvedCommit
+          env.SOLUTION = parsed.solutionPath
+          env.CONFIGURATION = parsed.configuration ?: 'Release'
+          env.PLATFORM = parsed.platform ?: 'x64'
+          env.NUGET_MODE = parsed.nugetMode ?: 'repo-packages-and-internal-feed'
+        }
+      }
+    }
+
+    stage('Windows build') {
+      agent {
+        kubernetes {
+          yaml """
+apiVersion: v1
+kind: Pod
+spec:
+  os:
+    name: windows
+  nodeSelector:
+    kubernetes.io/os: windows
+    build.company.io/windows-release: ${env.WINDOWS_RELEASE}
+    build.company.io/purpose: msbuild
+  tolerations:
+    - key: build.company.io/windows
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  containers:
+    - name: builder
+      image: registry.internal/build/msbuild-profile@${env.IMAGE_DIGEST}
+      imagePullPolicy: IfNotPresent
+      workingDir: C:\\\\workspace
+      command:
+        - powershell
+      args:
+        - -Command
+        - Start-Sleep -Seconds 86400
+"""
+        }
+      }
+      stages {
+        stage('Notify BUILDING') {
+          steps {
+            container('builder') {
+              powershell '''
+                python C:\\portal-tools\\portal_project_agent.py `
+                  event `
+                  --portal-url $env:PORTAL_BASE_URL `
+                  --hmac-secret $env:PORTAL_HMAC_SECRET `
+                  --request-id $env:BUILD_REQUEST_ID `
+                  --event-type BUILDING `
+                  --message "Project build started" `
+                  --build-number $env:BUILD_NUMBER
+              '''
+            }
+          }
+        }
+
+        stage('Checkout') {
+          steps {
+            container('builder') {
+              powershell '''
+                # Replace with your internal git checkout helper.
+                Write-Host "Checkout" $env:REPO $env:COMMIT
+              '''
+            }
+          }
+        }
+
+        stage('NuGet restore') {
+          steps {
+            container('builder') {
+              powershell '''
+                Write-Host "NuGet mode:" $env:NUGET_MODE
+                # nuget restore / dotnet restore against internal feed only
+              '''
+            }
+          }
+        }
+
+        stage('MSBuild') {
+          steps {
+            container('builder') {
+              powershell '''
+                Write-Host "MSBuild" $env:SOLUTION $env:CONFIGURATION $env:PLATFORM
+                # msbuild.exe $env:SOLUTION /p:Configuration=$env:CONFIGURATION /p:Platform=$env:PLATFORM
+              '''
+            }
+          }
+        }
+
+        stage('Test + Publish') {
+          steps {
+            container('builder') {
+              powershell '''
+                python C:\\portal-tools\\portal_project_agent.py `
+                  event `
+                  --portal-url $env:PORTAL_BASE_URL `
+                  --hmac-secret $env:PORTAL_HMAC_SECRET `
+                  --request-id $env:BUILD_REQUEST_ID `
+                  --event-type TESTING `
+                  --message "Tests running" `
+                  --build-number $env:BUILD_NUMBER
+
+                python C:\\portal-tools\\portal_project_agent.py `
+                  event `
+                  --portal-url $env:PORTAL_BASE_URL `
+                  --hmac-secret $env:PORTAL_HMAC_SECRET `
+                  --request-id $env:BUILD_REQUEST_ID `
+                  --event-type PUBLISHING `
+                  --message "Publishing artifacts" `
+                  --build-number $env:BUILD_NUMBER
+              '''
+            }
+          }
+        }
+
+        stage('Succeeded') {
+          steps {
+            container('builder') {
+              powershell '''
+                python C:\\portal-tools\\portal_project_agent.py `
+                  event `
+                  --portal-url $env:PORTAL_BASE_URL `
+                  --hmac-secret $env:PORTAL_HMAC_SECRET `
+                  --request-id $env:BUILD_REQUEST_ID `
+                  --event-type SUCCEEDED `
+                  --message "Project build succeeded" `
+                  --build-number $env:BUILD_NUMBER
+              '''
+            }
+          }
+        }
+      }
+    }
+  }
+
+  post {
+    failure {
+      powershell '''
+        if ($env:BUILD_REQUEST_ID -and $env:PORTAL_BASE_URL) {
+          python .\\jenkins\\shared-library\\scripts\\portal_project_agent.py `
+            event `
+            --portal-url $env:PORTAL_BASE_URL `
+            --hmac-secret $env:PORTAL_HMAC_SECRET `
+            --request-id $env:BUILD_REQUEST_ID `
+            --event-type PROJECT_BUILD_FAILED `
+            --message "Jenkins project pipeline failed" `
+            --build-number $env:BUILD_NUMBER
+        }
+      '''
+    }
+  }
+}

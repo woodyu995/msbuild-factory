@@ -1,0 +1,120 @@
+#!/usr/bin/env groovy
+/**
+ * msbuild-image-factory
+ *
+ * Parameters:
+ *   BUILD_REQUEST_ID
+ *   PROFILE_HASH
+ *   FACTORY_LEASE_ID
+ *
+ * Runs on a dedicated Windows factory node (label: msbuild-factory).
+ * Does NOT block project builds with wait:true from an orchestrator.
+ */
+pipeline {
+  agent { label 'msbuild-factory' }
+
+  options {
+    timestamps()
+    disableConcurrentBuilds()
+    timeout(time: 3, unit: HOURS)
+  }
+
+  parameters {
+    string(name: 'BUILD_REQUEST_ID', defaultValue: '', description: 'Portal build request id')
+    string(name: 'PROFILE_HASH', defaultValue: '', description: 'Canonical profile hash')
+    string(name: 'FACTORY_LEASE_ID', defaultValue: '', description: 'Portal factory lease id')
+  }
+
+  environment {
+    PORTAL_BASE_URL = credentials('portal-base-url')
+    PORTAL_HMAC_SECRET = credentials('portal-callback-hmac')
+  }
+
+  stages {
+    stage('Validate params') {
+      steps {
+        script {
+          if (!params.PROFILE_HASH?.trim() || !params.FACTORY_LEASE_ID?.trim()) {
+            error('PROFILE_HASH and FACTORY_LEASE_ID are required')
+          }
+        }
+      }
+    }
+
+    stage('Fetch artifacts') {
+      steps {
+        powershell '''
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path .\\factory-work | Out-Null
+          python .\\jenkins\\shared-library\\scripts\\portal_factory_agent.py `
+            fetch `
+            --portal-url $env:PORTAL_BASE_URL `
+            --profile-hash $env:PROFILE_HASH `
+            --lease-id $env:FACTORY_LEASE_ID `
+            --work-dir .\\factory-work
+        '''
+      }
+    }
+
+    stage('Heartbeat') {
+      steps {
+        powershell '''
+          python .\\jenkins\\shared-library\\scripts\\portal_factory_agent.py `
+            heartbeat `
+            --portal-url $env:PORTAL_BASE_URL `
+            --hmac-secret $env:PORTAL_HMAC_SECRET `
+            --profile-hash $env:PROFILE_HASH `
+            --lease-id $env:FACTORY_LEASE_ID
+        '''
+      }
+    }
+
+    stage('Build image') {
+      steps {
+        powershell '''
+          python .\\jenkins\\shared-library\\scripts\\portal_factory_agent.py `
+            build `
+            --portal-url $env:PORTAL_BASE_URL `
+            --hmac-secret $env:PORTAL_HMAC_SECRET `
+            --profile-hash $env:PROFILE_HASH `
+            --lease-id $env:FACTORY_LEASE_ID `
+            --request-id $env:BUILD_REQUEST_ID `
+            --work-dir .\\factory-work `
+            --layout-root $env:IMAGE_FACTORY_LAYOUT_ROOT `
+            --installer-root $env:IMAGE_FACTORY_INSTALLER_ROOT
+        '''
+      }
+    }
+
+    stage('Validate + Push + Ready callback') {
+      steps {
+        powershell '''
+          python .\\jenkins\\shared-library\\scripts\\portal_factory_agent.py `
+            finalize `
+            --portal-url $env:PORTAL_BASE_URL `
+            --hmac-secret $env:PORTAL_HMAC_SECRET `
+            --profile-hash $env:PROFILE_HASH `
+            --lease-id $env:FACTORY_LEASE_ID `
+            --request-id $env:BUILD_REQUEST_ID `
+            --work-dir .\\factory-work
+        '''
+      }
+    }
+  }
+
+  post {
+    failure {
+      powershell '''
+        if ($env:PROFILE_HASH -and $env:FACTORY_LEASE_ID -and $env:PORTAL_BASE_URL) {
+          python .\\jenkins\\shared-library\\scripts\\portal_factory_agent.py `
+            fail `
+            --portal-url $env:PORTAL_BASE_URL `
+            --hmac-secret $env:PORTAL_HMAC_SECRET `
+            --profile-hash $env:PROFILE_HASH `
+            --lease-id $env:FACTORY_LEASE_ID `
+            --message "Jenkins factory pipeline failed"
+        }
+      '''
+    }
+  }
+}
