@@ -6,6 +6,7 @@
 |----|------|---------|
 | `portal-base-url` | Secret text | Factory/Project Jenkinsfiles |
 | `portal-callback-hmac` | Secret text | Agent HMAC callbacks |
+| `portal-api-token` | Secret text | Project `resolve`/`pod-template` Bearer (`jenkins-bot`) |
 | `portal-jenkins-api` | Username/password | Portal `HttpJenkinsClient` |
 | `git-url-template` | Secret text | Project checkout (`https://git/{repository}.git`) |
 | `nuget-internal-feed-url` | Secret text | Windows NuGet restore |

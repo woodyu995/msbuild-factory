@@ -7,6 +7,9 @@
  *
  * Secrets are scoped with withCredentials around the steps that need them so
  * checkout/MSBuild of untrusted project code does not see PORTAL_HMAC_SECRET.
+ *
+ * When Portal PORTAL_REQUIRE_AUTH=true, resolve/pod-template need portal-api-token
+ * (Bearer). Internal build-events still use HMAC only.
  */
 pipeline {
   agent { label 'linux || built-in' }
@@ -32,15 +35,19 @@ pipeline {
             error('BUILD_REQUEST_ID is required')
           }
 
-          def metaText = sh(
-            returnStdout: true,
-            script: """
-              python3 jenkins/shared-library/scripts/portal_project_agent.py \\
-                resolve \\
-                --portal-url "\$PORTAL_BASE_URL" \\
-                --request-id "\$BUILD_REQUEST_ID"
-            """
-          ).trim()
+          def metaText
+          withCredentials([string(credentialsId: 'portal-api-token', variable: 'PORTAL_API_TOKEN')]) {
+            metaText = sh(
+              returnStdout: true,
+              script: """
+                python3 jenkins/shared-library/scripts/portal_project_agent.py \\
+                  resolve \\
+                  --portal-url "\$PORTAL_BASE_URL" \\
+                  --api-token "\$PORTAL_API_TOKEN" \\
+                  --request-id "\$BUILD_REQUEST_ID"
+              """
+            ).trim()
+          }
           writeFile file: 'request-meta.json', text: metaText
           def meta = readJSON file: 'request-meta.json'
           if (!meta.imageDigest) {
@@ -58,16 +65,20 @@ pipeline {
           def msbuildPs1 = readFile('jenkins/shared-library/scripts/windows/Invoke-MSBuild.ps1')
           def projectAgent = readFile('jenkins/shared-library/scripts/portal_project_agent.py')
 
-          def podYaml = sh(
-            returnStdout: true,
-            script: """
-              python3 jenkins/shared-library/scripts/portal_project_agent.py \\
-                pod-template \\
-                --portal-url "\$PORTAL_BASE_URL" \\
-                --request-id "\$BUILD_REQUEST_ID" \\
-                --format yaml
-            """
-          ).trim()
+          def podYaml
+          withCredentials([string(credentialsId: 'portal-api-token', variable: 'PORTAL_API_TOKEN')]) {
+            podYaml = sh(
+              returnStdout: true,
+              script: """
+                python3 jenkins/shared-library/scripts/portal_project_agent.py \\
+                  pod-template \\
+                  --portal-url "\$PORTAL_BASE_URL" \\
+                  --api-token "\$PORTAL_API_TOKEN" \\
+                  --request-id "\$BUILD_REQUEST_ID" \\
+                  --format yaml
+              """
+            ).trim()
+          }
           if (!podYaml.contains('Start-Sleep')) {
             podYaml = podYaml.replaceFirst(
               /(?m)^(\\s*)name:\\s*builder\\s*$/,
@@ -150,7 +161,7 @@ pipeline {
                       -Platform $env:PLATFORM
                   '''
 
-                  // Terminal / progress events (HMAC scoped)
+                  // Honest terminal: MSBuild done. Tests/publish are not wired yet.
                   withCredentials([string(credentialsId: 'portal-callback-hmac', variable: 'PORTAL_HMAC_SECRET')]) {
                     powershell '''
                       $tools = Join-Path $env:WORKSPACE "portal-tools"
@@ -160,24 +171,8 @@ pipeline {
                         --portal-url $env:PORTAL_BASE_URL `
                         --hmac-secret $env:PORTAL_HMAC_SECRET `
                         --request-id $env:BUILD_REQUEST_ID `
-                        --event-type TESTING `
-                        --message "Tests running" `
-                        --build-number $env:BUILD_NUMBER
-                      python $tools\\portal_project_agent.py `
-                        event `
-                        --portal-url $env:PORTAL_BASE_URL `
-                        --hmac-secret $env:PORTAL_HMAC_SECRET `
-                        --request-id $env:BUILD_REQUEST_ID `
-                        --event-type PUBLISHING `
-                        --message "Publishing artifacts" `
-                        --build-number $env:BUILD_NUMBER
-                      python $tools\\portal_project_agent.py `
-                        event `
-                        --portal-url $env:PORTAL_BASE_URL `
-                        --hmac-secret $env:PORTAL_HMAC_SECRET `
-                        --request-id $env:BUILD_REQUEST_ID `
                         --event-type SUCCEEDED `
-                        --message "Project build succeeded" `
+                        --message "MSBuild completed (tests/publish not configured in pipeline)" `
                         --build-number $env:BUILD_NUMBER
                     '''
                   }

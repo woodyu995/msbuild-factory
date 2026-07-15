@@ -76,6 +76,25 @@ def _lock_factory_slots(session: Session) -> None:
     ctrl.updated_at = utcnow()
 
 
+def _wait_for_inflight(
+    session: Session,
+    request: BuildRequest,
+    existing: BuildImage,
+    profile_hash: str,
+) -> str:
+    request.status = "IMAGE_WAITING"
+    request.match_type = "PENDING"
+    request.matched_profile_hash = existing.profile_hash
+    append_event(
+        session,
+        request.id,
+        "IMAGE_WAITING",
+        "Waiting for in-flight image factory run",
+        {"profileHash": profile_hash, "leaseId": existing.lease_id},
+    )
+    return "IMAGE_WAITING"
+
+
 def acquire_or_wait_factory(
     session: Session,
     catalog: Catalog,
@@ -87,34 +106,50 @@ def acquire_or_wait_factory(
 
     Returns request status set: IMAGE_BUILD_QUEUED | IMAGE_WAITING
     """
+    from sqlalchemy.exc import IntegrityError
+
     existing = get_active_image(session, resolved.profile_hash, for_update=True)
 
     if existing and existing.status == "READY":
-        # race: became ready between resolve and lock
         _attach_ready_image(session, request, existing, match_type="EXACT")
         return "BUILD_QUEUED"
 
     if existing and existing.status in {"CREATING", "VALIDATING"}:
-        request.status = "IMAGE_WAITING"
-        request.match_type = "PENDING"
-        request.matched_profile_hash = existing.profile_hash
-        append_event(
-            session,
-            request.id,
-            "IMAGE_WAITING",
-            "Waiting for in-flight image factory run",
-            {"profileHash": resolved.profile_hash, "leaseId": existing.lease_id},
-        )
-        return "IMAGE_WAITING"
+        return _wait_for_inflight(session, request, existing, resolved.profile_hash)
 
-    # New factory run path — lock global slot counter.
+    if existing and existing.status == "QUARANTINED":
+        request.status = "PROFILE_REJECTED"
+        request.error_code = "IMAGE_QUARANTINED"
+        request.error_message = "Matched profile image is quarantined"
+        request.finished_at = utcnow()
+        append_event(session, request.id, "PROFILE_REJECTED", request.error_message)
+        return "PROFILE_REJECTED"
+
+    # Creating / reviving requires the global slot lock, then a fresh read so two
+    # cold requests for the same hash cannot both insert.
     _lock_factory_slots(session)
+    existing = get_active_image(session, resolved.profile_hash, for_update=True)
 
-    if existing and existing.status == "FAILED":
-        # CAS retry: revive row
-        if count_creating(session) >= MAX_GLOBAL_CREATING:
-            raise FactoryBusy("factory slots full")
-        lease_id = f"factory-{uuid.uuid4().hex[:10]}"
+    if existing and existing.status == "READY":
+        _attach_ready_image(session, request, existing, match_type="EXACT")
+        return "BUILD_QUEUED"
+
+    if existing and existing.status in {"CREATING", "VALIDATING"}:
+        return _wait_for_inflight(session, request, existing, resolved.profile_hash)
+
+    if existing and existing.status == "QUARANTINED":
+        request.status = "PROFILE_REJECTED"
+        request.error_code = "IMAGE_QUARANTINED"
+        request.error_message = "Matched profile image is quarantined"
+        request.finished_at = utcnow()
+        append_event(session, request.id, "PROFILE_REJECTED", request.error_message)
+        return "PROFILE_REJECTED"
+
+    if count_creating(session) >= MAX_GLOBAL_CREATING:
+        raise FactoryBusy("factory slots full")
+
+    lease_id = f"factory-{uuid.uuid4().hex[:10]}"
+    if existing and existing.status in {"FAILED", "DEPRECATED"}:
         existing.status = "CREATING"
         existing.lease_id = lease_id
         existing.lease_owner = lease_id
@@ -122,18 +157,8 @@ def acquire_or_wait_factory(
         existing.failure_code = None
         existing.updated_at = utcnow()
         image = existing
-    elif existing and existing.status == "QUARANTINED":
-        request.status = "PROFILE_REJECTED"
-        request.error_code = "IMAGE_QUARANTINED"
-        request.error_message = "Matched profile image is quarantined"
-        request.finished_at = utcnow()
-        append_event(session, request.id, "PROFILE_REJECTED", request.error_message)
-        return "PROFILE_REJECTED"
     elif existing:
-        # DEPRECATED or unexpected: do not create a duplicate active row.
-        if count_creating(session) >= MAX_GLOBAL_CREATING:
-            raise FactoryBusy("factory slots full")
-        lease_id = f"factory-{uuid.uuid4().hex[:10]}"
+        # Unexpected non-deleted status: revive in place rather than duplicate.
         existing.status = "CREATING"
         existing.lease_id = lease_id
         existing.lease_owner = lease_id
@@ -141,9 +166,6 @@ def acquire_or_wait_factory(
         existing.updated_at = utcnow()
         image = existing
     else:
-        if count_creating(session) >= MAX_GLOBAL_CREATING:
-            raise FactoryBusy("factory slots full")
-        lease_id = f"factory-{uuid.uuid4().hex[:10]}"
         tag = f"vs{resolved.vs_generation}-{resolved.profile_hash[:12]}"
         image = BuildImage(
             profile_hash=resolved.profile_hash,
@@ -174,7 +196,18 @@ def acquire_or_wait_factory(
             lease_expires_at=utcnow() + timedelta(minutes=_lease_ttl_minutes(catalog)),
         )
         session.add(image)
-        session.flush()
+        try:
+            with session.begin_nested():
+                session.flush()
+        except IntegrityError:
+            # Another transaction won the partial-unique race — join as waiter.
+            raced = get_active_image(session, resolved.profile_hash, for_update=True)
+            if raced and raced.status in {"CREATING", "VALIDATING"}:
+                return _wait_for_inflight(session, request, raced, resolved.profile_hash)
+            if raced and raced.status == "READY":
+                _attach_ready_image(session, request, raced, match_type="EXACT")
+                return "BUILD_QUEUED"
+            raise
 
     jenkins = get_jenkins_client()
     trigger = jenkins.trigger_job(
@@ -344,7 +377,7 @@ def wake_waiters_for_image(
 
 
 def heartbeat_lease(session: Session, profile_hash: str, lease_id: str, extend_minutes: int = 30) -> BuildImage:
-    image = get_active_image(session, profile_hash)
+    image = get_active_image(session, profile_hash, for_update=True)
     if image is None:
         raise LookupError("image not found")
     if not image.lease_id or image.lease_id != lease_id:
@@ -366,7 +399,7 @@ def heartbeat_lease(session: Session, profile_hash: str, lease_id: str, extend_m
 
 def require_active_factory_lease(session: Session, profile_hash: str, lease_id: str) -> BuildImage:
     """Validate lease for factory-artifacts / privileged factory reads."""
-    image = get_active_image(session, profile_hash)
+    image = get_active_image(session, profile_hash, for_update=True)
     if image is None:
         raise LookupError("image not found")
     if image.status not in {"CREATING", "VALIDATING"}:

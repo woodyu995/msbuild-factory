@@ -6,6 +6,7 @@ import uuid
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.models import BuildEvent, BuildImage, BuildRequest, utcnow
@@ -49,6 +50,24 @@ def payload_fingerprint(payload: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _existing_for_idempotency(
+    session: Session,
+    *,
+    idempotency_key: str,
+    fingerprint: str,
+) -> BuildRequest | None:
+    existing = session.scalar(
+        select(BuildRequest).where(BuildRequest.idempotency_key == idempotency_key)
+    )
+    if existing is None:
+        return None
+    if existing.idempotency_payload_hash and existing.idempotency_payload_hash != fingerprint:
+        raise IdempotencyConflict()
+    if not existing.idempotency_payload_hash:
+        existing.idempotency_payload_hash = fingerprint
+    return existing
+
+
 def create_build_request(
     session: Session,
     catalog: Catalog,
@@ -61,15 +80,10 @@ def create_build_request(
 ) -> BuildRequest:
     fingerprint = payload_fingerprint(payload)
     if idempotency_key:
-        existing = session.scalar(
-            select(BuildRequest).where(BuildRequest.idempotency_key == idempotency_key)
+        existing = _existing_for_idempotency(
+            session, idempotency_key=idempotency_key, fingerprint=fingerprint
         )
         if existing:
-            if existing.idempotency_payload_hash and existing.idempotency_payload_hash != fingerprint:
-                raise IdempotencyConflict()
-            # Legacy rows without hash: accept once and backfill.
-            if not existing.idempotency_payload_hash:
-                existing.idempotency_payload_hash = fingerprint
             return existing
 
     project = payload["project"]
@@ -115,7 +129,19 @@ def create_build_request(
         environment_json=json.dumps(environment, ensure_ascii=False),
     )
     session.add(request)
-    session.flush()
+    try:
+        with session.begin_nested():
+            session.flush()
+    except IntegrityError:
+        if not idempotency_key:
+            raise
+        raced = _existing_for_idempotency(
+            session, idempotency_key=idempotency_key, fingerprint=fingerprint
+        )
+        if raced:
+            return raced
+        raise
+
     append_event(
         session,
         request.id,

@@ -124,12 +124,9 @@ def apply_image_status_callback(
     capability_profile: dict[str, Any] | None = None,
     message: str | None = None,
 ) -> tuple[BuildImage, list[str]]:
-    row = session.scalar(
-        select(BuildImage).where(
-            BuildImage.profile_hash == profile_hash,
-            BuildImage.status != "DELETED",
-        )
-    )
+    from app.services.factory import get_active_image
+
+    row = get_active_image(session, profile_hash, for_update=True)
     if row is None:
         raise LookupError("image not found")
     # Lease CAS: mutating callbacks require an active, unexpired lease that matches exactly.

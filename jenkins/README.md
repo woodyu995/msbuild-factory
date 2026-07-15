@@ -61,6 +61,7 @@ pipelineJob('msbuild-project-build') {
 
 - `portal-base-url`
 - `portal-callback-hmac`
+- `portal-api-token` (Bearer for `/api/v1` when auth required)
 - `portal-jenkins-api` (Portal → Jenkins trigger)
 - `git-url-template` (project checkout)
 - `nuget-internal-feed-url` (Windows restore)

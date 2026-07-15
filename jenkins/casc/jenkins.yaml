@@ -45,6 +45,11 @@ credentials:
               description: "HMAC secret shared with Portal"
           - string:
               scope: GLOBAL
+              id: portal-api-token
+              secret: "${PORTAL_API_TOKEN}"
+              description: "Bearer token for Portal /api/v1 when REQUIRE_AUTH=true (jenkins-bot)"
+          - string:
+              scope: GLOBAL
               id: git-url-template
               secret: "https://git.internal/{repository}.git"
               description: "Git clone URL template for project builds"
