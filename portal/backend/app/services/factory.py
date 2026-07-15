@@ -95,55 +95,36 @@ def _wait_for_inflight(
     return "IMAGE_WAITING"
 
 
-def acquire_or_wait_factory(
+def start_or_join_factory(
     session: Session,
     catalog: Catalog,
     *,
     resolved: ResolvedProfile,
-    request: BuildRequest,
-) -> str:
-    """Ensure a factory run exists for requested hash.
+    request_id: str | None = None,
+) -> tuple[BuildImage, str]:
+    """Ensure a factory run exists for profile hash (no BuildRequest required).
 
-    Returns request status set: IMAGE_BUILD_QUEUED | IMAGE_WAITING
+    Returns (image_row, phase) where phase is:
+      READY | CREATING | WAITING | QUARANTINED | BUSY
     """
     from sqlalchemy.exc import IntegrityError
 
     existing = get_active_image(session, resolved.profile_hash, for_update=True)
-
     if existing and existing.status == "READY":
-        _attach_ready_image(session, request, existing, match_type="EXACT")
-        return "BUILD_QUEUED"
-
+        return existing, "READY"
     if existing and existing.status in {"CREATING", "VALIDATING"}:
-        return _wait_for_inflight(session, request, existing, resolved.profile_hash)
-
+        return existing, "WAITING"
     if existing and existing.status == "QUARANTINED":
-        request.status = "PROFILE_REJECTED"
-        request.error_code = "IMAGE_QUARANTINED"
-        request.error_message = "Matched profile image is quarantined"
-        request.finished_at = utcnow()
-        append_event(session, request.id, "PROFILE_REJECTED", request.error_message)
-        return "PROFILE_REJECTED"
+        return existing, "QUARANTINED"
 
-    # Creating / reviving requires the global slot lock, then a fresh read so two
-    # cold requests for the same hash cannot both insert.
     _lock_factory_slots(session)
     existing = get_active_image(session, resolved.profile_hash, for_update=True)
-
     if existing and existing.status == "READY":
-        _attach_ready_image(session, request, existing, match_type="EXACT")
-        return "BUILD_QUEUED"
-
+        return existing, "READY"
     if existing and existing.status in {"CREATING", "VALIDATING"}:
-        return _wait_for_inflight(session, request, existing, resolved.profile_hash)
-
+        return existing, "WAITING"
     if existing and existing.status == "QUARANTINED":
-        request.status = "PROFILE_REJECTED"
-        request.error_code = "IMAGE_QUARANTINED"
-        request.error_message = "Matched profile image is quarantined"
-        request.finished_at = utcnow()
-        append_event(session, request.id, "PROFILE_REJECTED", request.error_message)
-        return "PROFILE_REJECTED"
+        return existing, "QUARANTINED"
 
     if count_creating(session) >= MAX_GLOBAL_CREATING:
         raise FactoryBusy("factory slots full")
@@ -158,7 +139,6 @@ def acquire_or_wait_factory(
         existing.updated_at = utcnow()
         image = existing
     elif existing:
-        # Unexpected non-deleted status: revive in place rather than duplicate.
         existing.status = "CREATING"
         existing.lease_id = lease_id
         existing.lease_owner = lease_id
@@ -200,32 +180,65 @@ def acquire_or_wait_factory(
             with session.begin_nested():
                 session.flush()
         except IntegrityError:
-            # Another transaction won the partial-unique race — join as waiter.
             raced = get_active_image(session, resolved.profile_hash, for_update=True)
             if raced and raced.status in {"CREATING", "VALIDATING"}:
-                return _wait_for_inflight(session, request, raced, resolved.profile_hash)
+                return raced, "WAITING"
             if raced and raced.status == "READY":
-                _attach_ready_image(session, request, raced, match_type="EXACT")
-                return "BUILD_QUEUED"
+                return raced, "READY"
             raise
 
     jenkins = get_jenkins_client()
     trigger = jenkins.trigger_job(
         FACTORY_JOB,
         {
-            "BUILD_REQUEST_ID": request.id,
+            "BUILD_REQUEST_ID": request_id or "",
             "PROFILE_HASH": resolved.profile_hash,
             "FACTORY_LEASE_ID": image.lease_id,
         },
     )
     image.factory_job_id = trigger.queue_id
     image.updated_at = utcnow()
+    session.flush()
+    return image, "CREATING"
 
+
+def acquire_or_wait_factory(
+    session: Session,
+    catalog: Catalog,
+    *,
+    resolved: ResolvedProfile,
+    request: BuildRequest,
+) -> str:
+    """Ensure a factory run exists for requested hash (legacy combined path).
+
+    Returns request status set: IMAGE_BUILD_QUEUED | IMAGE_WAITING | BUILD_QUEUED
+    """
+    try:
+        image, phase = start_or_join_factory(
+            session, catalog, resolved=resolved, request_id=request.id
+        )
+    except FactoryBusy:
+        raise
+
+    if phase == "READY":
+        _attach_ready_image(session, request, image, match_type="EXACT")
+        return "BUILD_QUEUED"
+    if phase == "QUARANTINED":
+        request.status = "PROFILE_REJECTED"
+        request.error_code = "IMAGE_QUARANTINED"
+        request.error_message = "Matched profile image is quarantined"
+        request.finished_at = utcnow()
+        append_event(session, request.id, "PROFILE_REJECTED", request.error_message)
+        return "PROFILE_REJECTED"
+    if phase == "WAITING":
+        return _wait_for_inflight(session, request, image, resolved.profile_hash)
+
+    # CREATING — this request owns / follows the newly queued factory job
     request.status = "IMAGE_BUILD_QUEUED"
     request.match_type = "CREATED"
     request.matched_profile_hash = resolved.profile_hash
     request.jenkins_job_name = FACTORY_JOB
-    request.jenkins_queue_id = trigger.queue_id
+    request.jenkins_queue_id = image.factory_job_id
     append_event(
         session,
         request.id,
@@ -234,7 +247,7 @@ def acquire_or_wait_factory(
         {
             "profileHash": resolved.profile_hash,
             "leaseId": image.lease_id,
-            "queueId": trigger.queue_id,
+            "queueId": image.factory_job_id,
             "jobName": FACTORY_JOB,
         },
     )

@@ -61,14 +61,18 @@ npm run dev
 
 UI proxies `/api` to `http://127.0.0.1:8000`.
 
-## Local complete path
+## Local complete path (API split B)
 
-1. Submit build request (Preset reuse → `BUILD_QUEUED`, cold → `IMAGE_BUILD_QUEUED`)
-2. Click **Simulate workers** in UI, or:
+1. `POST /api/v1/images/ensure` with environment → reuse READY or start factory
+2. Poll `GET /api/v1/images/{profileHash}` until `ready: true` (or Simulate factory)
+3. `POST /api/v1/build-requests` with project + environment (+ optional `matchedProfileHash` / `imageDigest`) → `BUILD_QUEUED`
+4. Click **Simulate project** in UI, or:
    ```bash
    curl -X POST http://127.0.0.1:8000/api/v1/build-requests/{id}/simulate
    ```
-3. Request advances to `SUCCEEDED` with simulated image digest
+5. Request advances to `SUCCEEDED` with simulated image digest
+
+Cold profiles return `409 IMAGE_NOT_READY` from build-requests until ensure finishes.
 
 ## Scope notes
 

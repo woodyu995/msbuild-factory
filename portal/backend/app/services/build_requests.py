@@ -9,10 +9,9 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.db.models import BuildEvent, BuildImage, BuildRequest, utcnow
+from app.db.models import BuildEvent, BuildRequest, utcnow
 from app.domain.catalog import Catalog
 from app.domain.profile_resolver import ProfileRejected
-from app.domain.git_resolve import GitResolveError
 from app.domain.project_validation import (
     InvalidProjectInput,
     validate_configuration,
@@ -21,11 +20,7 @@ from app.domain.project_validation import (
     validate_solution_path,
 )
 from app.services.events import append_event
-from app.services.factory import (
-    FactoryBusy,
-    acquire_or_wait_factory,
-    queue_project_build,
-)
+from app.services.factory import get_active_image, queue_project_build
 from app.services.image_resolve import (
     ensure_profile_row,
     factory_enabled,
@@ -38,6 +33,24 @@ class IdempotencyConflict(Exception):
         super().__init__(message)
         self.code = "IDEMPOTENCY_CONFLICT"
         self.message = message
+
+
+class ImageNotReady(Exception):
+    """Build start requires a READY image from POST /api/v1/images/ensure."""
+
+    def __init__(
+        self,
+        message: str = "Image is not READY; call POST /api/v1/images/ensure first",
+        *,
+        code: str = "IMAGE_NOT_READY",
+        requested_profile_hash: str | None = None,
+        image_status: str | None = None,
+    ):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.requested_profile_hash = requested_profile_hash
+        self.image_status = image_status
 
 
 def _new_request_id() -> str:
@@ -106,8 +119,57 @@ def create_build_request(
         from app.domain.git_resolve import PlaceholderGitResolver
 
         git_resolver = PlaceholderGitResolver()
-    resolved = git_resolver.resolve(repository, git_ref)
-    resolved_commit, commit_resolution = resolved.commit, resolved.mode
+    resolved_git = git_resolver.resolve(repository, git_ref)
+    resolved_commit, commit_resolution = resolved_git.commit, resolved_git.mode
+
+    # Resolve image before creating the request — start-build never runs factory.
+    resolved, match, action = resolve_image(
+        session,
+        catalog,
+        environment,
+        factory_enabled_override=factory_enabled_override,
+    )
+    ensure_profile_row(session, catalog, resolved, actor)
+
+    client_hash = payload.get("matchedProfileHash")
+    client_digest = payload.get("imageDigest")
+
+    if match is None:
+        inflight = get_active_image(session, resolved.profile_hash)
+        status = inflight.status if inflight else "NOT_CREATED"
+        if action == "REJECTED":
+            raise ProfileRejected(
+                "No compatible READY image and factory is disabled",
+            )
+        raise ImageNotReady(
+            f"Image status is {status}; call POST /api/v1/images/ensure and wait until READY",
+            requested_profile_hash=resolved.profile_hash,
+            image_status=status,
+        )
+
+    image = get_active_image(session, match.candidate.profile_hash)
+    if image is None or image.status not in {"READY", "DEPRECATED"}:
+        status = image.status if image else "NOT_CREATED"
+        raise ImageNotReady(
+            f"Matched image is not READY (status={status})",
+            requested_profile_hash=resolved.profile_hash,
+            image_status=status,
+        )
+
+    if client_hash and client_hash != image.profile_hash:
+        raise ImageNotReady(
+            f"matchedProfileHash mismatch: expected {image.profile_hash}",
+            code="IMAGE_REF_MISMATCH",
+            requested_profile_hash=resolved.profile_hash,
+            image_status=image.status,
+        )
+    if client_digest and client_digest != image.image_digest:
+        raise ImageNotReady(
+            "imageDigest does not match READY image",
+            code="IMAGE_REF_MISMATCH",
+            requested_profile_hash=resolved.profile_hash,
+            image_status=image.status,
+        )
 
     request = BuildRequest(
         id=_new_request_id(),
@@ -118,9 +180,9 @@ def create_build_request(
         solution_path=solution_path,
         configuration=configuration,
         platform=platform,
-        requested_profile_hash="",
+        requested_profile_hash=resolved.profile_hash,
         match_type="PENDING",
-        reuse_mode=environment.get("reuseMode") or "preferCompatible",
+        reuse_mode=resolved.requested.get("reuseMode") or "preferCompatible",
         nuget_mode=nuget_mode,
         status="REQUESTED",
         requested_by=actor,
@@ -149,59 +211,13 @@ def create_build_request(
         "Build request accepted",
         {"commitResolution": commit_resolution, "resolvedCommit": resolved_commit},
     )
-
-    request.status = "VALIDATING_PROFILE"
     append_event(session, request.id, "VALIDATING_PROFILE", "Validating profile against catalog")
-
-    request.status = "RESOLVING_IMAGE"
-    append_event(session, request.id, "RESOLVING_IMAGE", "Resolving image via Exact/Capability matcher")
-
-    resolved, match, action = resolve_image(
+    append_event(
         session,
-        catalog,
-        environment,
-        factory_enabled_override=factory_enabled_override,
+        request.id,
+        "RESOLVING_IMAGE",
+        "Attaching READY image (factory already complete)",
     )
-    ensure_profile_row(session, catalog, resolved, actor)
-    request.requested_profile_hash = resolved.profile_hash
-    request.reuse_mode = resolved.requested.get("reuseMode") or "preferCompatible"
-
-    if match is None:
-        if action == "REJECTED":
-            request.status = "PROFILE_REJECTED"
-            request.error_code = "PROFILE_REJECTED"
-            request.error_message = "No compatible READY image and factory is disabled"
-            request.finished_at = utcnow()
-            append_event(
-                session,
-                request.id,
-                request.status,
-                request.error_message,
-                {"action": action, "requestedProfileHash": resolved.profile_hash},
-            )
-            session.flush()
-            return request
-
-        # Factory path
-        try:
-            acquire_or_wait_factory(session, catalog, resolved=resolved, request=request)
-        except FactoryBusy as exc:
-            request.status = "FACTORY_BUSY"
-            request.error_code = "FACTORY_BUSY"
-            request.error_message = str(exc)
-            request.finished_at = utcnow()
-            append_event(session, request.id, "FACTORY_BUSY", str(exc))
-        session.flush()
-        return request
-
-    image = session.scalar(
-        select(BuildImage).where(
-            BuildImage.profile_hash == match.candidate.profile_hash,
-            BuildImage.status.in_(["READY", "DEPRECATED"]),
-        )
-    )
-    if image is None:
-        raise RuntimeError("matched image missing from database")
 
     queue_project_build(
         session,

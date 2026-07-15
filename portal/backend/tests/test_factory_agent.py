@@ -50,19 +50,12 @@ def test_factory_agent_dry_run_against_portal(tmp_path, monkeypatch):
     mod = _load_agent()
 
     with TestClient(app) as client:
-        created = client.post(
-            "/api/v1/build-requests",
-            json={
-                "project": {
-                    "repository": "ColdApp",
-                    "gitRef": "main",
-                    "solutionPath": "ColdApp.sln",
-                },
-                "environment": COLD_ENV,
-            },
+        ensured = client.post(
+            "/api/v1/images/ensure",
+            json={"environment": COLD_ENV},
         ).json()
-        assert created["status"] == "IMAGE_BUILD_QUEUED"
-        profile_hash = created["requestedProfileHash"]
+        assert ensured["imageStatus"] == "CREATING"
+        profile_hash = ensured["matchedProfileHash"]
 
         session = client.app.state.session_factory()
         image = session.query(BuildImage).filter_by(profile_hash=profile_hash).one()
@@ -93,7 +86,7 @@ def test_factory_agent_dry_run_against_portal(tmp_path, monkeypatch):
             portal_url=str(client.base_url),
             profile_hash=profile_hash,
             lease_id=lease_id,
-            request_id=created["id"],
+            request_id="",
             work_dir=str(work),
             hmac_secret="dev-callback-secret-change-me",
             dry_run=True,
@@ -107,8 +100,24 @@ def test_factory_agent_dry_run_against_portal(tmp_path, monkeypatch):
         mod.cmd_build(args)
         mod.cmd_finalize(args)
 
-        got = client.get(f"/api/v1/build-requests/{created['id']}").json()
-        assert got["status"] == "BUILD_QUEUED"
-        assert got["imageDigest"].startswith("sha256:dry-run-")
-        assert got["windowsBase"] == "ltsc2022"
-        assert got["environment"]["visualStudio"] == "2022"
+        status = client.get(f"/api/v1/images/{profile_hash}").json()
+        assert status["ready"] is True
+        assert status["image"]["digest"].startswith("sha256:dry-run-")
+
+        created = client.post(
+            "/api/v1/build-requests",
+            json={
+                "project": {
+                    "repository": "ColdApp",
+                    "gitRef": "main",
+                    "solutionPath": "ColdApp.sln",
+                },
+                "environment": COLD_ENV,
+                "matchedProfileHash": profile_hash,
+                "imageDigest": status["image"]["digest"],
+            },
+        ).json()
+        assert created["status"] == "BUILD_QUEUED"
+        assert created["imageDigest"].startswith("sha256:dry-run-")
+        assert created["windowsBase"] == "ltsc2022"
+        assert created["environment"]["visualStudio"] == "2022"

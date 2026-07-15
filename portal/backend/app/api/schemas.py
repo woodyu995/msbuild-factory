@@ -36,9 +36,17 @@ class NugetInfo(BaseModel):
 
 
 class BuildRequestCreate(BaseModel):
+    """Start a project build. Requires a READY image (call /images/ensure first)."""
+
     project: ProjectInfo
     environment: EnvironmentSelection
     nuget: NugetInfo = Field(default_factory=NugetInfo)
+    matchedProfileHash: str | None = None
+    imageDigest: str | None = None
+
+
+class EnsureImageRequest(BaseModel):
+    environment: EnvironmentSelection
 
 
 class ImageRef(BaseModel):
@@ -61,6 +69,33 @@ class ValidateResponse(BaseModel):
     image: ImageRef | None = None
     errorCode: str | None = None
     errorMessage: str | None = None
+
+
+class EnsureImageResponse(BaseModel):
+    requestedProfileHash: str
+    matchedProfileHash: str | None = None
+    matchType: str | None = None
+    action: str
+    imageStatus: str
+    estimatedWaitMinutes: int = 0
+    providedCapabilities: list[str] = Field(default_factory=list)
+    extraCapabilities: list[str] = Field(default_factory=list)
+    image: ImageRef | None = None
+    windowsBase: str | None = None
+    factoryLeaseId: str | None = None
+    errorCode: str | None = None
+    errorMessage: str | None = None
+    ready: bool = False
+
+
+class ImageStatusResponse(BaseModel):
+    profileHash: str
+    imageStatus: str
+    ready: bool
+    image: ImageRef | None = None
+    windowsBase: str | None = None
+    factoryLeaseId: str | None = None
+    leaseExpiresAt: str | None = None
 
 
 class BuildRequestResponse(BaseModel):

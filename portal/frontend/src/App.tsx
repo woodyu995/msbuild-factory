@@ -34,17 +34,19 @@ type Options = {
   requireAuth?: boolean;
 };
 
-type ValidateResult = {
-  valid: boolean;
-  requestedProfileHash?: string;
+type EnsureResult = {
+  requestedProfileHash: string;
   matchedProfileHash?: string;
   matchType?: string;
   action: string;
+  imageStatus: string;
+  ready: boolean;
   estimatedWaitMinutes?: number;
   providedCapabilities?: string[];
   extraCapabilities?: string[];
   errorMessage?: string;
   image?: { repository: string; tag: string; digest: string };
+  factoryLeaseId?: string;
 };
 
 type BuildRequest = {
@@ -91,6 +93,18 @@ function apiHeaders(extra: Record<string, string> = {}, token: string): HeadersI
   return headers;
 }
 
+function detailMessage(data: unknown): string {
+  if (data && typeof data === "object" && "detail" in data) {
+    const detail = (data as { detail: unknown }).detail;
+    if (typeof detail === "string") return detail;
+    if (detail && typeof detail === "object" && "message" in detail) {
+      return String((detail as { message: unknown }).message);
+    }
+    return JSON.stringify(detail);
+  }
+  return JSON.stringify(data);
+}
+
 export default function App() {
   const [options, setOptions] = useState<Options | null>(null);
   const [env, setEnv] = useState<Environment>(emptyEnv);
@@ -102,7 +116,7 @@ export default function App() {
     platform: "x64",
   });
   const [apiToken, setApiToken] = useState(loadToken);
-  const [validateResult, setValidateResult] = useState<ValidateResult | null>(null);
+  const [ensureResult, setEnsureResult] = useState<EnsureResult | null>(null);
   const [buildResult, setBuildResult] = useState<BuildRequest | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -122,6 +136,43 @@ export default function App() {
       .then(setOptions)
       .catch((err) => setError(String(err)));
   }, [apiToken]);
+
+  // Poll image until READY after ensure
+  useEffect(() => {
+    const hash = ensureResult?.matchedProfileHash || ensureResult?.requestedProfileHash;
+    if (!hash || ensureResult?.ready) return;
+    if (!["CREATING", "VALIDATING", "BUSY"].includes(ensureResult?.imageStatus || "")) return;
+
+    const timer = window.setInterval(() => {
+      fetch(`/api/v1/images/${hash}`, {
+        headers: apiHeaders({}, apiToken),
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          setEnsureResult((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  imageStatus: data.imageStatus,
+                  ready: data.ready,
+                  image: data.image,
+                  factoryLeaseId: data.factoryLeaseId,
+                  matchedProfileHash: data.profileHash,
+                  action: data.ready ? "REUSE_EXACT" : prev.action,
+                }
+              : prev,
+          );
+        })
+        .catch(() => undefined);
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [
+    ensureResult?.matchedProfileHash,
+    ensureResult?.requestedProfileHash,
+    ensureResult?.ready,
+    ensureResult?.imageStatus,
+    apiToken,
+  ]);
 
   useEffect(() => {
     if (!buildResult?.id) return;
@@ -150,21 +201,22 @@ export default function App() {
     [options, env.visualStudio],
   );
 
-  async function onValidate() {
+  async function onEnsure() {
     setBusy(true);
     setError(null);
+    setBuildResult(null);
     try {
-      const resp = await fetch("/api/v1/build-environment/validate", {
+      const resp = await fetch("/api/v1/images/ensure", {
         method: "POST",
         headers: apiHeaders({ "Content-Type": "application/json" }, apiToken),
         body: JSON.stringify({ environment: env }),
       });
       const data = await resp.json();
       if (!resp.ok) {
-        setError(data?.detail?.message || JSON.stringify(data));
+        setError(detailMessage(data));
         return;
       }
-      setValidateResult(data);
+      setEnsureResult(data);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -172,7 +224,45 @@ export default function App() {
     }
   }
 
-  async function onSubmit() {
+  async function onSimulateFactory() {
+    const hash = ensureResult?.matchedProfileHash || ensureResult?.requestedProfileHash;
+    if (!hash) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const resp = await fetch(`/api/v1/images/${hash}/simulate`, {
+        method: "POST",
+        headers: apiHeaders({}, apiToken),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        setError(detailMessage(data));
+        return;
+      }
+      const status = await fetch(`/api/v1/images/${hash}`, {
+        headers: apiHeaders({}, apiToken),
+      });
+      const image = await status.json();
+      setEnsureResult((prev) =>
+        prev
+          ? {
+              ...prev,
+              imageStatus: image.imageStatus,
+              ready: image.ready,
+              image: image.image,
+              matchedProfileHash: image.profileHash,
+              action: image.ready ? "REUSE_EXACT" : prev.action,
+            }
+          : prev,
+      );
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onStartBuild() {
     setBusy(true);
     setError(null);
     try {
@@ -189,11 +279,13 @@ export default function App() {
           project,
           environment: env,
           nuget: { mode: "repo-packages-and-internal-feed" },
+          matchedProfileHash: ensureResult?.matchedProfileHash,
+          imageDigest: ensureResult?.image?.digest,
         }),
       });
       const data = await resp.json();
       if (!resp.ok) {
-        setError(data?.detail?.message || JSON.stringify(data));
+        setError(detailMessage(data));
         return;
       }
       setBuildResult(data);
@@ -204,7 +296,7 @@ export default function App() {
     }
   }
 
-  async function onSimulate() {
+  async function onSimulateBuild() {
     if (!buildResult?.id) return;
     setBusy(true);
     setError(null);
@@ -215,7 +307,7 @@ export default function App() {
       });
       const data = await resp.json();
       if (!resp.ok) {
-        setError(typeof data?.detail === "string" ? data.detail : JSON.stringify(data));
+        setError(detailMessage(data));
         return;
       }
       const refreshed = await fetch(`/api/v1/build-requests/${buildResult.id}`, {
@@ -229,14 +321,15 @@ export default function App() {
     }
   }
 
+  const imageReady = Boolean(ensureResult?.ready && ensureResult?.image);
+
   return (
     <div className="app">
       <header className="brand">
         <h1>MSBuild Build Portal</h1>
         <p>
-          승인된 빌드 도구를 선택하면 Exact 또는 Capability Superset 이미지로
-          매칭합니다. Factory/Project Worker가 없으면 Simulate로 로컬 완료 경로를
-          실행할 수 있습니다.
+          1) 빌드 환경으로 이미지를 ensure → 2) READY 후 프로젝트 빌드 시작. Factory가
+          필요하면 Nexus에 푸시될 때까지 polling합니다.
           {options?.simulateWorkers ? " (auto-simulate ON)" : ""}
           {options?.requireAuth ? " · auth required" : ""}
         </p>
@@ -365,19 +458,42 @@ export default function App() {
           ))}
 
           <div className="actions">
-            <button className="secondary" type="button" disabled={busy} onClick={onValidate}>
-              Validate / Match
+            <button className="primary" type="button" disabled={busy} onClick={onEnsure}>
+              1. Ensure image
             </button>
-            <button className="primary" type="button" disabled={busy} onClick={onSubmit}>
-              Submit build request
+            {!imageReady &&
+              ensureResult &&
+              ["CREATING", "VALIDATING"].includes(ensureResult.imageStatus) &&
+              options?.simulateWorkers && (
+                <button
+                  className="secondary"
+                  type="button"
+                  disabled={busy}
+                  onClick={onSimulateFactory}
+                >
+                  Simulate factory
+                </button>
+              )}
+            <button
+              className="primary"
+              type="button"
+              disabled={busy || !imageReady}
+              onClick={onStartBuild}
+            >
+              2. Start build
             </button>
             {buildResult &&
               !["SUCCEEDED", "PROFILE_REJECTED", "CANCELLED", "IMAGE_BUILD_FAILED", "PROJECT_BUILD_FAILED", "TEST_FAILED"].includes(
                 buildResult.status,
               ) &&
               options?.simulateWorkers && (
-                <button className="secondary" type="button" disabled={busy} onClick={onSimulate}>
-                  Simulate workers
+                <button
+                  className="secondary"
+                  type="button"
+                  disabled={busy}
+                  onClick={onSimulateBuild}
+                >
+                  Simulate project
                 </button>
               )}
           </div>
@@ -385,50 +501,57 @@ export default function App() {
         </section>
 
         <section className="panel">
-          <h2>매칭 결과</h2>
-          {!validateResult && !buildResult && (
+          <h2>이미지 / 빌드</h2>
+          {!ensureResult && !buildResult && (
             <p style={{ color: "var(--muted)", margin: 0 }}>
-              Preset을 고르거나 구성 후 Validate를 실행하세요.
+              Preset을 고르거나 구성 후 Ensure image를 실행하세요.
               {options ? ` Catalog ${options.catalogVersion}.` : ""}
             </p>
           )}
 
-          {validateResult && (
+          {ensureResult && (
             <div className="result">
               <span
                 className={`badge ${
-                  validateResult.valid ? "ok" : validateResult.action === "REJECTED" ? "err" : "warn"
+                  ensureResult.ready
+                    ? "ok"
+                    : ensureResult.action === "REJECTED" || ensureResult.errorMessage
+                      ? "err"
+                      : "warn"
                 }`}
               >
-                {validateResult.action}
+                {ensureResult.ready ? "READY" : ensureResult.imageStatus || ensureResult.action}
               </span>
-              {validateResult.matchType && (
+              {ensureResult.matchType && (
                 <div>
-                  matchType: <span className="mono">{validateResult.matchType}</span>
+                  matchType: <span className="mono">{ensureResult.matchType}</span>
                 </div>
               )}
-              {validateResult.requestedProfileHash && (
+              {ensureResult.requestedProfileHash && (
                 <div>
-                  requested: <span className="mono">{validateResult.requestedProfileHash}</span>
+                  requested: <span className="mono">{ensureResult.requestedProfileHash}</span>
                 </div>
               )}
-              {validateResult.matchedProfileHash && (
+              {ensureResult.matchedProfileHash && (
                 <div>
-                  matched: <span className="mono">{validateResult.matchedProfileHash}</span>
+                  matched: <span className="mono">{ensureResult.matchedProfileHash}</span>
                 </div>
               )}
-              {validateResult.image && (
+              {ensureResult.image && (
                 <div>
-                  digest: <span className="mono">{validateResult.image.digest}</span>
+                  digest: <span className="mono">{ensureResult.image.digest}</span>
                 </div>
               )}
-              {!!validateResult.extraCapabilities?.length && (
+              {!!ensureResult.extraCapabilities?.length && (
                 <div>
-                  extra: <span className="mono">{validateResult.extraCapabilities.join(", ")}</span>
+                  extra: <span className="mono">{ensureResult.extraCapabilities.join(", ")}</span>
                 </div>
               )}
-              {validateResult.errorMessage && (
-                <div className="error">{validateResult.errorMessage}</div>
+              {!ensureResult.ready && ensureResult.estimatedWaitMinutes ? (
+                <div>estimated wait: ~{ensureResult.estimatedWaitMinutes} min</div>
+              ) : null}
+              {ensureResult.errorMessage && (
+                <div className="error">{ensureResult.errorMessage}</div>
               )}
             </div>
           )}
@@ -440,13 +563,9 @@ export default function App() {
                 className={`badge ${
                   ["BUILD_QUEUED", "SUCCEEDED"].includes(buildResult.status)
                     ? "ok"
-                    : ["IMAGE_BUILD_QUEUED", "IMAGE_WAITING", "IMAGE_BUILDING", "IMAGE_VALIDATING"].includes(
-                          buildResult.status,
-                        )
-                      ? "warn"
-                      : buildResult.status.includes("FAIL") || buildResult.status.includes("REJECT")
-                        ? "err"
-                        : "warn"
+                    : buildResult.status.includes("FAIL") || buildResult.status.includes("REJECT")
+                      ? "err"
+                      : "warn"
                 }`}
               >
                 {buildResult.status}

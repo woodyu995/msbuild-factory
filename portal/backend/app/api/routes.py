@@ -9,8 +9,10 @@ from sqlalchemy.orm import Session
 from app.api.schemas import (
     BuildRequestCreate,
     BuildRequestResponse,
-    EnvironmentSelection,
+    EnsureImageRequest,
+    EnsureImageResponse,
     ImageRef,
+    ImageStatusResponse,
     InternalBuildEvent,
     InternalImageStatus,
     ValidateRequest,
@@ -22,6 +24,7 @@ from app.domain.git_resolve import GitResolveError
 from app.security.hmac_auth import CallbackAuthError, verify_hmac
 from app.services.build_requests import (
     IdempotencyConflict,
+    ImageNotReady,
     apply_build_event_callback,
     create_build_request,
     get_build_request,
@@ -29,10 +32,11 @@ from app.services.build_requests import (
     list_events,
 )
 from app.services.factory import build_factory_artifacts, heartbeat_lease, require_active_factory_lease
+from app.services.image_ensure import ensure_image, get_image_status
 from app.services.image_resolve import apply_image_status_callback, resolve_image
 from app.services.reconcile import reconcile_expired_leases
 from app.services.simulation import auto_advance_request, simulate_factory_run, simulate_project_build
-from app.services.worker_schedule import maybe_schedule_auto_advance
+from app.services.worker_schedule import maybe_schedule_auto_advance, maybe_schedule_factory_simulate
 from app.db.models import BuildProfile
 from sqlalchemy import select
 
@@ -251,6 +255,102 @@ def validate(
     )
 
 
+@router.post("/api/v1/images/ensure", response_model=EnsureImageResponse)
+def ensure_image_endpoint(
+    body: EnsureImageRequest,
+    request: Request,
+    session: SessionDep,
+    background_tasks: BackgroundTasks,
+    actor: Annotated[object, Depends(actor_from_headers)],
+):
+    """Step 1: reuse a READY image or start/join Image Factory. Does not start project build."""
+    catalog = get_catalog(request)
+    settings = get_settings(request)
+    actor_name = getattr(actor, "name", str(actor))
+    try:
+        result = ensure_image(
+            session,
+            catalog,
+            environment=body.environment.model_dump(),
+            actor=actor_name,
+            factory_enabled_override=settings.factory_enabled,
+        )
+    except ProfileRejected as exc:
+        raise HTTPException(status_code=400, detail={"code": exc.code, "message": exc.message}) from exc
+
+    if result.matched_profile_hash:
+        maybe_schedule_factory_simulate(
+            background_tasks=background_tasks,
+            settings=settings,
+            session_factory=request.app.state.session_factory,
+            catalog=catalog,
+            profile_hash=result.matched_profile_hash,
+            image_status=result.image_status,
+        )
+
+    data = result.to_dict()
+    image = None
+    if data.get("image"):
+        image = ImageRef(**data["image"])
+    return EnsureImageResponse(
+        requestedProfileHash=data["requestedProfileHash"],
+        matchedProfileHash=data["matchedProfileHash"],
+        matchType=data["matchType"],
+        action=data["action"],
+        imageStatus=data["imageStatus"],
+        estimatedWaitMinutes=data["estimatedWaitMinutes"],
+        providedCapabilities=data["providedCapabilities"],
+        extraCapabilities=data["extraCapabilities"],
+        image=image,
+        windowsBase=data["windowsBase"],
+        factoryLeaseId=data["factoryLeaseId"],
+        errorCode=data["errorCode"],
+        errorMessage=data["errorMessage"],
+        ready=data["ready"],
+    )
+
+
+@router.get("/api/v1/images/{profile_hash}", response_model=ImageStatusResponse)
+def image_status_endpoint(
+    profile_hash: str,
+    session: SessionDep,
+    actor: Annotated[object, Depends(actor_from_headers)],
+):
+    """Poll image readiness after POST /api/v1/images/ensure."""
+    try:
+        data = get_image_status(session, profile_hash)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    image = ImageRef(**data["image"]) if data.get("image") else None
+    return ImageStatusResponse(
+        profileHash=data["profileHash"],
+        imageStatus=data["imageStatus"],
+        ready=data["ready"],
+        image=image,
+        windowsBase=data["windowsBase"],
+        factoryLeaseId=data["factoryLeaseId"],
+        leaseExpiresAt=data["leaseExpiresAt"],
+    )
+
+
+@router.post("/api/v1/images/{profile_hash}/simulate")
+def simulate_image_factory_from_api(
+    profile_hash: str,
+    request: Request,
+    session: SessionDep,
+    actor: Annotated[object, Depends(actor_from_headers)],
+):
+    """Dev helper: complete Image Factory simulation for a profile (no build request)."""
+    _require_simulation_enabled(request, actor)
+    catalog = get_catalog(request)
+    try:
+        return simulate_factory_run(session, catalog, profile_hash=profile_hash)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/api/v1/build-requests", response_model=BuildRequestResponse)
 def create_request(
     body: BuildRequestCreate,
@@ -260,6 +360,7 @@ def create_request(
     actor: Annotated[object, Depends(actor_from_headers)],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
+    """Step 2: start project build. Requires a READY image from /images/ensure."""
     catalog = get_catalog(request)
     settings = get_settings(request)
     actor_name = getattr(actor, "name", str(actor))
@@ -275,6 +376,16 @@ def create_request(
         )
     except ProfileRejected as exc:
         raise HTTPException(status_code=400, detail={"code": exc.code, "message": exc.message}) from exc
+    except ImageNotReady as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": exc.code,
+                "message": exc.message,
+                "requestedProfileHash": exc.requested_profile_hash,
+                "imageStatus": exc.image_status,
+            },
+        ) from exc
     except IdempotencyConflict as exc:
         raise HTTPException(status_code=409, detail={"code": exc.code, "message": exc.message}) from exc
     except (InvalidProjectInput, GitResolveError) as exc:

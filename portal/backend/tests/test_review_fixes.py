@@ -27,14 +27,9 @@ def _client(tmp_path, **env):
 
 def test_expired_lease_status_callback_rejected(tmp_path):
     with _client(tmp_path) as client:
-        created = client.post(
-            "/api/v1/build-requests",
+        ensured = client.post(
+            "/api/v1/images/ensure",
             json={
-                "project": {
-                    "repository": "ColdApp",
-                    "gitRef": "main",
-                    "solutionPath": "ColdApp.sln",
-                },
                 "environment": {
                     "visualStudio": "2022",
                     "dotnetFrameworks": ["4.8"],
@@ -46,7 +41,7 @@ def test_expired_lease_status_callback_rejected(tmp_path):
                 },
             },
         ).json()
-        profile_hash = created["requestedProfileHash"]
+        profile_hash = ensured["matchedProfileHash"]
         session = client.app.state.session_factory()
         image = session.query(BuildImage).filter_by(profile_hash=profile_hash).one()
         lease_id = image.lease_id
@@ -72,14 +67,9 @@ def test_expired_lease_status_callback_rejected(tmp_path):
 
 def test_null_lease_status_callback_rejected(tmp_path):
     with _client(tmp_path) as client:
-        created = client.post(
-            "/api/v1/build-requests",
+        ensured = client.post(
+            "/api/v1/images/ensure",
             json={
-                "project": {
-                    "repository": "ColdApp",
-                    "gitRef": "main",
-                    "solutionPath": "ColdApp.sln",
-                },
                 "environment": {
                     "visualStudio": "2022",
                     "dotnetFrameworks": ["4.8"],
@@ -91,7 +81,7 @@ def test_null_lease_status_callback_rejected(tmp_path):
                 },
             },
         ).json()
-        profile_hash = created["requestedProfileHash"]
+        profile_hash = ensured["matchedProfileHash"]
         session = client.app.state.session_factory()
         image = session.query(BuildImage).filter_by(profile_hash=profile_hash).one()
         image.lease_id = None
@@ -142,14 +132,9 @@ def test_simulate_disabled_by_default(tmp_path):
 
 def test_factory_artifacts_requires_hmac_and_lease(tmp_path):
     with _client(tmp_path) as client:
-        created = client.post(
-            "/api/v1/build-requests",
+        ensured = client.post(
+            "/api/v1/images/ensure",
             json={
-                "project": {
-                    "repository": "ColdApp",
-                    "gitRef": "main",
-                    "solutionPath": "ColdApp.sln",
-                },
                 "environment": {
                     "visualStudio": "2022",
                     "dotnetFrameworks": ["4.8"],
@@ -161,7 +146,7 @@ def test_factory_artifacts_requires_hmac_and_lease(tmp_path):
                 },
             },
         ).json()
-        profile_hash = created["requestedProfileHash"]
+        profile_hash = ensured["matchedProfileHash"]
         denied = client.post(f"/internal/v1/images/{profile_hash}/factory-artifacts", json={})
         assert denied.status_code == 401
 

@@ -41,10 +41,12 @@ Seed from `jenkins/README.md` Job DSL, or create Pipeline jobs pointing at:
 ## 4. Smoke test (no Windows docker)
 
 1. Start Portal with Jenkins URL unset (recording client)
-2. Create cold build request → `IMAGE_BUILD_QUEUED`
-3. Run factory agent dry-run → READY / `BUILD_QUEUED`
-4. `GET /api/v1/build-requests/{id}/pod-template` → YAML with digest
-5. Optional local only: `PORTAL_SIMULATE_WORKERS=true` then
+2. `POST /api/v1/images/ensure` for cold env → `CREATING`
+3. Run factory agent dry-run → READY
+4. `POST /api/v1/build-requests` → `BUILD_QUEUED`
+5. `GET /api/v1/build-requests/{id}/pod-template` → YAML with digest
+6. Optional local only: `PORTAL_SIMULATE_WORKERS=true` then
+   `POST /api/v1/images/{hash}/simulate` and/or
    `POST /api/v1/build-requests/{id}/simulate` → `SUCCEEDED`
 
 ## 5. Production cutover

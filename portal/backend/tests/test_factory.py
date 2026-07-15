@@ -66,36 +66,40 @@ def test_validate_requests_image_creation_for_cold_exact(tmp_path):
 
 def test_factory_queue_waiter_and_ready_callback(tmp_path):
     with _client(tmp_path) as client:
-        payload = {
-            "project": {
-                "repository": "ColdApp",
-                "gitRef": "main",
-                "solutionPath": "ColdApp.sln",
-            },
-            "environment": COLD_ENV,
-        }
-        r1 = client.post("/api/v1/build-requests", json=payload).json()
-        assert r1["status"] == "IMAGE_BUILD_QUEUED"
-        assert r1["matchType"] == "CREATED"
-        profile_hash = r1["requestedProfileHash"]
+        # Step 1: ensure image (no build request yet)
+        e1 = client.post("/api/v1/images/ensure", json={"environment": COLD_ENV}).json()
+        assert e1["imageStatus"] == "CREATING"
+        assert e1["ready"] is False
+        profile_hash = e1["requestedProfileHash"]
+        assert e1["matchedProfileHash"] == profile_hash
 
-        r2 = client.post("/api/v1/build-requests", json=payload).json()
-        assert r2["status"] == "IMAGE_WAITING"
-        assert r2["requestedProfileHash"] == profile_hash
+        e2 = client.post("/api/v1/images/ensure", json={"environment": COLD_ENV}).json()
+        assert e2["imageStatus"] in {"CREATING", "VALIDATING"}
+        assert e2["matchedProfileHash"] == profile_hash
 
         jenkins = get_jenkins_client()
         assert any(job == "msbuild-image-factory" for job, _ in jenkins.calls)
 
-        # load lease id
+        # cold build must not start until READY
+        denied = client.post(
+            "/api/v1/build-requests",
+            json={
+                "project": {
+                    "repository": "ColdApp",
+                    "gitRef": "main",
+                    "solutionPath": "ColdApp.sln",
+                },
+                "environment": COLD_ENV,
+            },
+        )
+        assert denied.status_code == 409
+        assert denied.json()["detail"]["code"] == "IMAGE_NOT_READY"
+
         session = client.app.state.session_factory()
         image = session.query(BuildImage).filter_by(profile_hash=profile_hash).one()
         lease_id = image.lease_id
         session.close()
         assert lease_id
-
-        # fetch artifacts (HMAC + active lease)
-        import time
-        from app.security.hmac_auth import sign_body
 
         raw = json.dumps({"leaseId": lease_id}).encode()
         ts = str(int(time.time()))
@@ -137,18 +141,12 @@ def test_factory_queue_waiter_and_ready_callback(tmp_path):
         )
         assert ready.status_code == 200
         assert ready.json()["status"] == "READY"
-        assert set(ready.json()["affectedRequestIds"]) >= {r1["id"], r2["id"]}
 
-        g1 = client.get(f"/api/v1/build-requests/{r1['id']}").json()
-        g2 = client.get(f"/api/v1/build-requests/{r2['id']}").json()
-        assert g1["status"] == "BUILD_QUEUED"
-        assert g2["status"] == "BUILD_QUEUED"
-        assert g1["imageDigest"] == "sha256:cold-image-ready"
-        assert any(job == "msbuild-project-build" for job, _ in jenkins.calls)
+        status = client.get(f"/api/v1/images/{profile_hash}").json()
+        assert status["ready"] is True
+        assert status["image"]["digest"] == "sha256:cold-image-ready"
 
-
-def test_stale_lease_still_rejected(tmp_path):
-    with _client(tmp_path) as client:
+        # Step 2: start builds against READY image
         payload = {
             "project": {
                 "repository": "ColdApp",
@@ -156,9 +154,21 @@ def test_stale_lease_still_rejected(tmp_path):
                 "solutionPath": "ColdApp.sln",
             },
             "environment": COLD_ENV,
+            "matchedProfileHash": profile_hash,
+            "imageDigest": "sha256:cold-image-ready",
         }
-        created = client.post("/api/v1/build-requests", json=payload).json()
-        profile_hash = created["requestedProfileHash"]
+        r1 = client.post("/api/v1/build-requests", json=payload).json()
+        r2 = client.post("/api/v1/build-requests", json=payload).json()
+        assert r1["status"] == "BUILD_QUEUED"
+        assert r2["status"] == "BUILD_QUEUED"
+        assert r1["imageDigest"] == "sha256:cold-image-ready"
+        assert any(job == "msbuild-project-build" for job, _ in jenkins.calls)
+
+
+def test_stale_lease_still_rejected(tmp_path):
+    with _client(tmp_path) as client:
+        ensured = client.post("/api/v1/images/ensure", json={"environment": COLD_ENV}).json()
+        profile_hash = ensured["requestedProfileHash"]
         body = {"status": "FAILED", "leaseId": "not-the-lease", "message": "stale"}
         raw, headers = _hmac_headers(body)
         resp = client.post(
@@ -171,25 +181,14 @@ def test_stale_lease_still_rejected(tmp_path):
 
 def test_reconcile_expired_lease(tmp_path):
     with _client(tmp_path) as client:
-        payload = {
-            "project": {
-                "repository": "ColdApp",
-                "gitRef": "main",
-                "solutionPath": "ColdApp.sln",
-            },
-            "environment": COLD_ENV,
-        }
-        created = client.post("/api/v1/build-requests", json=payload).json()
-        profile_hash = created["requestedProfileHash"]
+        ensured = client.post("/api/v1/images/ensure", json={"environment": COLD_ENV}).json()
+        profile_hash = ensured["requestedProfileHash"]
 
         session = client.app.state.session_factory()
         image = session.query(BuildImage).filter_by(profile_hash=profile_hash).one()
         image.lease_expires_at = utcnow() - timedelta(minutes=1)
         session.commit()
         session.close()
-
-        import time
-        from app.security.hmac_auth import sign_body
 
         raw = b"{}"
         ts = str(int(time.time()))
@@ -204,10 +203,24 @@ def test_reconcile_expired_lease(tmp_path):
             },
         ).json()
         assert profile_hash in result["expiredImages"]
-        assert created["id"] in result["affectedRequests"]
 
-        got = client.get(f"/api/v1/build-requests/{created['id']}").json()
-        assert got["status"] == "IMAGE_BUILD_FAILED"
+        status = client.get(f"/api/v1/images/{profile_hash}").json()
+        assert status["imageStatus"] == "FAILED"
+        assert status["ready"] is False
+
+        denied = client.post(
+            "/api/v1/build-requests",
+            json={
+                "project": {
+                    "repository": "ColdApp",
+                    "gitRef": "main",
+                    "solutionPath": "ColdApp.sln",
+                },
+                "environment": COLD_ENV,
+            },
+        )
+        assert denied.status_code == 409
+        assert denied.json()["detail"]["code"] == "IMAGE_NOT_READY"
 
 
 def test_dockerfile_generation_unit():
