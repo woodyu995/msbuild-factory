@@ -1,0 +1,43 @@
+{
+  "requestedHash": "cafebabe00000000000000000000000000000000000000000000000000000000",
+  "requestedCapability": {
+    "visualStudio": "2022",
+    "dotnetFrameworks": [],
+    "dotnetSdks": [],
+    "cppToolsets": [
+      "v142"
+    ],
+    "windowsSdks": [
+      "10.0.22621.0"
+    ],
+    "features": [
+      "mfc"
+    ],
+    "windowsBase": "ltsc2022",
+    "customSdks": []
+  },
+  "candidates": [
+    {
+      "profileHash": "79d64e4717e1e380934c83da9480db103f086d5bb041afc83c620d09a216c096",
+      "imageDigest": "sha256:native",
+      "capability": {
+        "visualStudio": "2022",
+        "dotnetFrameworks": [],
+        "dotnetSdks": [],
+        "cppToolsets": [
+          "v143"
+        ],
+        "windowsSdks": [
+          "10.0.22621.0"
+        ],
+        "features": [
+          "atl",
+          "mfc"
+        ],
+        "windowsBase": "ltsc2022",
+        "customSdks": []
+      }
+    }
+  ],
+  "expect": null
+}

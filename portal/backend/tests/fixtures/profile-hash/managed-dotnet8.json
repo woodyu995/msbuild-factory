@@ -1,0 +1,18 @@
+{
+  "environment": {
+    "visualStudio": "2022",
+    "dotnetFrameworks": [
+      "4.8"
+    ],
+    "dotnetSdks": [
+      "8.0"
+    ],
+    "cppToolsets": [],
+    "windowsSdks": [],
+    "features": [
+      "managed-desktop"
+    ]
+  },
+  "expectedProfileHash": "4452d7df84cdb696b6578f7f5285c5ebc0972f23efeeca1b1f5e12c6dc773ed7",
+  "expectedCanonical": "{\"agentBase\":{\"digest\":\"sha256:agent-base-ltsc2022-mvp0001\",\"image\":\"registry.internal/build/agent-base-ltsc2022\"},\"cppToolsets\":[],\"customSdks\":[],\"dotnetFrameworkTargetingPacks\":[{\"installerSha256\":\"sha256:net48-targeting-mvp0001\",\"version\":\"4.8.1\"}],\"dotnetSdks\":[{\"installerSha256\":\"sha256:dotnet-sdk-8-mvp0001\",\"version\":\"8.0.412\"}],\"features\":[\"managed-desktop\"],\"installScriptVersion\":\"install-scripts-7\",\"schemaVersion\":2,\"templateVersion\":\"image-template-3\",\"validationSuiteVersion\":\"validation-5\",\"visualStudio\":{\"components\":[\"Microsoft.Component.MSBuild\",\"Microsoft.VisualStudio.Workload.ManagedDesktopBuildTools\"],\"generation\":\"2022\",\"layoutManifestDigest\":\"sha256:layout-2022-mvp0001\",\"layoutRelease\":\"vs2022-17.14.x\"},\"windowsBase\":{\"digest\":\"sha256:windows-base-ltsc2022-mvp0001\",\"name\":\"ltsc2022\"},\"windowsSdks\":[]}"
+}
