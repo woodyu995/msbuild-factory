@@ -1,15 +1,25 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.db.models import BuildEvent, BuildRequest, utcnow
+from app.db.models import BuildEvent, BuildImage, BuildRequest, utcnow
 from app.domain.catalog import Catalog
 from app.domain.profile_resolver import ProfileRejected
+from app.domain.git_resolve import GitResolveError
+from app.domain.project_validation import (
+    InvalidProjectInput,
+    validate_configuration,
+    validate_platform,
+    validate_repository,
+    validate_solution_path,
+)
 from app.services.events import append_event
 from app.services.factory import (
     FactoryBusy,
@@ -21,12 +31,41 @@ from app.services.image_resolve import (
     factory_enabled,
     resolve_image,
 )
-from app.db.models import BuildImage
+
+
+class IdempotencyConflict(Exception):
+    def __init__(self, message: str = "Idempotency-Key reused with different payload"):
+        super().__init__(message)
+        self.code = "IDEMPOTENCY_CONFLICT"
+        self.message = message
 
 
 def _new_request_id() -> str:
     stamp = utcnow().strftime("%Y%m%d")
     return f"br-{stamp}-{uuid.uuid4().hex[:6]}"
+
+
+def payload_fingerprint(payload: dict[str, Any]) -> str:
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _existing_for_idempotency(
+    session: Session,
+    *,
+    idempotency_key: str,
+    fingerprint: str,
+) -> BuildRequest | None:
+    existing = session.scalar(
+        select(BuildRequest).where(BuildRequest.idempotency_key == idempotency_key)
+    )
+    if existing is None:
+        return None
+    if existing.idempotency_payload_hash and existing.idempotency_payload_hash != fingerprint:
+        raise IdempotencyConflict()
+    if not existing.idempotency_payload_hash:
+        existing.idempotency_payload_hash = fingerprint
+    return existing
 
 
 def create_build_request(
@@ -37,10 +76,12 @@ def create_build_request(
     actor: str,
     idempotency_key: str | None = None,
     factory_enabled_override: bool | None = None,
+    git_resolver=None,
 ) -> BuildRequest:
+    fingerprint = payload_fingerprint(payload)
     if idempotency_key:
-        existing = session.scalar(
-            select(BuildRequest).where(BuildRequest.idempotency_key == idempotency_key)
+        existing = _existing_for_idempotency(
+            session, idempotency_key=idempotency_key, fingerprint=fingerprint
         )
         if existing:
             return existing
@@ -56,17 +97,27 @@ def create_build_request(
     }:
         raise ProfileRejected(f"unsupported nuget mode: {nuget_mode}")
 
+    repository = validate_repository(project["repository"])
+    solution_path = validate_solution_path(project["solutionPath"])
+    configuration = validate_configuration(project.get("configuration"))
+    platform = validate_platform(project.get("platform"))
     git_ref = project["gitRef"]
-    resolved_commit = git_ref if len(git_ref) >= 40 else f"resolved:{git_ref}"
+    if git_resolver is None:
+        from app.domain.git_resolve import PlaceholderGitResolver
+
+        git_resolver = PlaceholderGitResolver()
+    resolved = git_resolver.resolve(repository, git_ref)
+    resolved_commit, commit_resolution = resolved.commit, resolved.mode
 
     request = BuildRequest(
         id=_new_request_id(),
-        repository=project["repository"],
+        repository=repository,
         git_ref=git_ref,
         resolved_commit=resolved_commit,
-        solution_path=project["solutionPath"],
-        configuration=project.get("configuration") or "Release",
-        platform=project.get("platform") or "x64",
+        commit_resolution=commit_resolution,
+        solution_path=solution_path,
+        configuration=configuration,
+        platform=platform,
         requested_profile_hash="",
         match_type="PENDING",
         reuse_mode=environment.get("reuseMode") or "preferCompatible",
@@ -74,11 +125,30 @@ def create_build_request(
         status="REQUESTED",
         requested_by=actor,
         idempotency_key=idempotency_key,
+        idempotency_payload_hash=fingerprint,
         environment_json=json.dumps(environment, ensure_ascii=False),
     )
     session.add(request)
-    session.flush()
-    append_event(session, request.id, "REQUESTED", "Build request accepted")
+    try:
+        with session.begin_nested():
+            session.flush()
+    except IntegrityError:
+        if not idempotency_key:
+            raise
+        raced = _existing_for_idempotency(
+            session, idempotency_key=idempotency_key, fingerprint=fingerprint
+        )
+        if raced:
+            return raced
+        raise
+
+    append_event(
+        session,
+        request.id,
+        "REQUESTED",
+        "Build request accepted",
+        {"commitResolution": commit_resolution, "resolvedCommit": resolved_commit},
+    )
 
     request.status = "VALIDATING_PROFILE"
     append_event(session, request.id, "VALIDATING_PROFILE", "Validating profile against catalog")
@@ -116,9 +186,10 @@ def create_build_request(
         try:
             acquire_or_wait_factory(session, catalog, resolved=resolved, request=request)
         except FactoryBusy as exc:
-            request.status = "IMAGE_BUILD_QUEUED"
+            request.status = "FACTORY_BUSY"
             request.error_code = "FACTORY_BUSY"
             request.error_message = str(exc)
+            request.finished_at = utcnow()
             append_event(session, request.id, "FACTORY_BUSY", str(exc))
         session.flush()
         return request
@@ -185,6 +256,43 @@ def apply_build_event_callback(
         "IMAGE_BUILDING",
         "IMAGE_VALIDATING",
     }
+    allowed_from = {
+        "BUILDING": {"BUILD_QUEUED", "BUILDING"},
+        "TESTING": {"BUILDING", "TESTING"},
+        "PUBLISHING": {"TESTING", "PUBLISHING", "BUILDING"},
+        "SUCCEEDED": {"PUBLISHING", "TESTING", "BUILDING", "BUILD_QUEUED"},
+        "PROJECT_BUILD_FAILED": {
+            "BUILD_QUEUED",
+            "BUILDING",
+            "TESTING",
+            "PUBLISHING",
+        },
+        "TEST_FAILED": {"TESTING", "BUILDING"},
+        "IMAGE_BUILDING": {"IMAGE_BUILD_QUEUED", "IMAGE_WAITING", "IMAGE_BUILDING"},
+        "IMAGE_VALIDATING": {"IMAGE_BUILDING", "IMAGE_VALIDATING", "IMAGE_BUILD_QUEUED"},
+        "IMAGE_BUILD_FAILED": {
+            "IMAGE_BUILD_QUEUED",
+            "IMAGE_WAITING",
+            "IMAGE_BUILDING",
+            "IMAGE_VALIDATING",
+        },
+        "IMAGE_VALIDATION_FAILED": {"IMAGE_VALIDATING", "IMAGE_BUILDING"},
+        "CANCELLED": {
+            "REQUESTED",
+            "VALIDATING_PROFILE",
+            "RESOLVING_IMAGE",
+            "IMAGE_BUILD_QUEUED",
+            "IMAGE_WAITING",
+            "BUILD_QUEUED",
+            "BUILDING",
+            "TESTING",
+            "PUBLISHING",
+        },
+    }
+    if event_type in allowed_from and request.status not in allowed_from[event_type]:
+        raise ValueError(
+            f"invalid transition {request.status} -> {event_type}"
+        )
 
     if event_type in progressing | terminal_success | terminal_fail:
         request.status = event_type

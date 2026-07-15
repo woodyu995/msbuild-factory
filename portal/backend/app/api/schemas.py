@@ -69,6 +69,7 @@ class BuildRequestResponse(BaseModel):
     repository: str
     gitRef: str
     resolvedCommit: str
+    commitResolution: str | None = None
     solutionPath: str
     configuration: str
     platform: str
@@ -85,6 +86,8 @@ class BuildRequestResponse(BaseModel):
     errorCode: str | None = None
     errorMessage: str | None = None
     image: ImageRef | None = None
+    windowsBase: str | None = None
+    environment: dict[str, Any] | None = None
 
 
 class InternalBuildEvent(BaseModel):

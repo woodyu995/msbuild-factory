@@ -10,12 +10,18 @@ from app.api.routes import router
 from app.config import get_settings
 from app.db.models import make_session_factory
 from app.domain.catalog import load_catalog
+from app.domain.git_resolve import build_git_resolver
 from app.services.jenkins import configure_jenkins_client
 from app.services.seed import seed_preset_images
 
 
 def create_app(database_url: str | None = None, catalog_path: Path | None = None) -> FastAPI:
     settings = get_settings()
+    if not settings.allow_insecure_defaults and settings.is_default_hmac_secret:
+        raise RuntimeError(
+            "Refusing to start with default PORTAL_CALLBACK_HMAC_SECRET; "
+            "set a strong secret or PORTAL_ALLOW_INSECURE_DEFAULTS=true for local only"
+        )
     db_url = database_url or settings.database_url
     cat_path = catalog_path or settings.catalog_path
 
@@ -31,6 +37,13 @@ def create_app(database_url: str | None = None, catalog_path: Path | None = None
         app.state.settings = settings
         app.state.catalog = catalog
         app.state.session_factory = session_factory
+        app.state.git_resolver = build_git_resolver(
+            mode=settings.git_resolve_mode,
+            url_template=settings.git_url_template,
+            http_base_url=settings.git_http_base_url,
+            token=settings.git_token,
+            require_exact=settings.git_require_exact,
+        )
         with session_factory() as session:
             seed_preset_images(session, catalog)
             session.commit()
@@ -52,6 +65,9 @@ def create_app(database_url: str | None = None, catalog_path: Path | None = None
             "status": "ok",
             "simulateWorkers": settings.simulate_workers,
             "jenkinsConfigured": bool(settings.jenkins_url and settings.jenkins_api_token),
+            "insecureDefaults": settings.allow_insecure_defaults and settings.is_default_hmac_secret,
+            "gitResolveMode": settings.git_resolve_mode,
+            "requireAuth": settings.require_auth,
         }
 
     return app

@@ -7,11 +7,13 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
     create_engine,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
@@ -39,6 +41,16 @@ class BuildProfile(Base):
 
 class BuildImage(Base):
     __tablename__ = "build_image"
+    __table_args__ = (
+        # Postgres: one non-deleted image row per profile_hash
+        Index(
+            "build_image_profile_hash_active_uidx",
+            "profile_hash",
+            unique=True,
+            postgresql_where=text("status <> 'DELETED'"),
+            sqlite_where=text("status <> 'DELETED'"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     profile_hash: Mapped[str] = mapped_column(String(64), index=True)
@@ -93,7 +105,8 @@ class BuildRequest(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     repository: Mapped[str] = mapped_column(String(255))
     git_ref: Mapped[str] = mapped_column(String(255))
-    resolved_commit: Mapped[str] = mapped_column(String(64))
+    resolved_commit: Mapped[str] = mapped_column(String(255))
+    commit_resolution: Mapped[str] = mapped_column(String(32), default="placeholder")
     solution_path: Mapped[str] = mapped_column(String(512))
     configuration: Mapped[str] = mapped_column(String(64))
     platform: Mapped[str] = mapped_column(String(64))
@@ -113,6 +126,7 @@ class BuildRequest(Base):
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True, unique=True)
+    idempotency_payload_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     environment_json: Mapped[str] = mapped_column(Text)
     provided_capabilities_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     extra_capabilities_json: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -133,6 +147,15 @@ class BuildEvent(Base):
     request: Mapped[BuildRequest] = relationship(back_populates="events")
 
 
+class FactoryControl(Base):
+    """Singleton row (id=1) used as a global factory slot lock via FOR UPDATE."""
+
+    __tablename__ = "factory_control"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 def make_engine(database_url: str):
     connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
     return create_engine(database_url, future=True, connect_args=connect_args)
@@ -141,4 +164,9 @@ def make_engine(database_url: str):
 def make_session_factory(database_url: str):
     engine = make_engine(database_url)
     Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+    with SessionLocal() as session:
+        if session.get(FactoryControl, 1) is None:
+            session.add(FactoryControl(id=1))
+            session.commit()
+    return SessionLocal

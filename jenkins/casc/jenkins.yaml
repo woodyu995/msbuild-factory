@@ -1,0 +1,70 @@
+# Jenkins Configuration as Code (example)
+# Apply with the Configuration as Code plugin.
+# Replace vault/credential ids with your secret backend.
+
+jenkins:
+  systemMessage: "MSBuild Build Factory Jenkins"
+  numExecutors: 0
+  remotingSecurity:
+    enabled: true
+  nodes:
+    - permanent:
+        name: "msbuild-factory-01"
+        labelString: "msbuild-factory windows"
+        remoteFS: "C:\\jenkins"
+        numExecutors: 1
+        retentionStrategy: "always"
+        launcher:
+          inbound:
+            workDirSettings:
+              disabled: false
+              failIfWorkDirIsMissing: false
+              internalDir: "remoting"
+  # Kubernetes cloud schema varies by plugin version — verify against your Jenkins.
+  clouds:
+    - kubernetes:
+        name: "k8s-windows-msbuild"
+        namespace: "msbuild-build"
+        jenkinsUrl: "https://jenkins.internal/"
+        skipTlsVerify: false
+        templates: []
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - string:
+              scope: GLOBAL
+              id: portal-base-url
+              secret: "https://build-portal.internal"
+              description: "Build Portal base URL"
+          - string:
+              scope: GLOBAL
+              id: portal-callback-hmac
+              secret: "${PORTAL_CALLBACK_HMAC_SECRET}"
+              description: "HMAC secret shared with Portal"
+          - string:
+              scope: GLOBAL
+              id: portal-api-token
+              secret: "${PORTAL_API_TOKEN}"
+              description: "Bearer token for Portal /api/v1 when REQUIRE_AUTH=true (jenkins-bot)"
+          - string:
+              scope: GLOBAL
+              id: git-url-template
+              secret: "https://git.internal/{repository}.git"
+              description: "Git clone URL template for project builds"
+          - string:
+              scope: GLOBAL
+              id: nuget-internal-feed-url
+              secret: "https://nuget.internal/v3/index.json"
+              description: "Internal NuGet feed for Windows restore"
+          - usernamePassword:
+              scope: GLOBAL
+              id: portal-jenkins-api
+              username: "portal-bot"
+              password: "${JENKINS_API_TOKEN}"
+              description: "API user used by Portal HttpJenkinsClient"
+
+unclassified:
+  location:
+    url: "https://jenkins.internal/"

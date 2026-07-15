@@ -1,0 +1,16 @@
+# Example labels / taints for Windows MSBuild node pools.
+# Apply with your node provisioning tool (AKS nodepool, Cluster API, etc.)
+
+apiVersion: v1
+kind: Node
+metadata:
+  name: windows-msbuild-ltsc2022-example
+  labels:
+    kubernetes.io/os: windows
+    build.company.io/windows-release: ltsc2022
+    build.company.io/purpose: msbuild
+spec:
+  taints:
+    - key: build.company.io/windows
+      value: "true"
+      effect: NoSchedule

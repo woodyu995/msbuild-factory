@@ -15,18 +15,32 @@ class Settings(BaseSettings):
     catalog_path: Path = DEFAULT_CATALOG
     callback_hmac_secret: str = "dev-callback-secret-change-me"
     callback_timestamp_skew_seconds: int = 300
-    # MVP auth bypass for local UI; set PORTAL_REQUIRE_AUTH=true in prod-like envs
+    # API auth: set PORTAL_REQUIRE_AUTH=true and PORTAL_API_TOKENS=user:token:role
     require_auth: bool = False
+    api_tokens: str | None = None
     default_actor: str = "local-dev"
+    # Default is builder-only; grant operator/admin via PORTAL_API_TOKENS or override for local sim.
+    default_actor_roles: str = "builder"
     # None = follow catalog.mvpFactoryEnabled; True/False overrides
     factory_enabled: bool | None = None
     factory_lease_minutes: int = 135
     # Local/dev: auto-simulate factory + project build after queueing
-    # Set PORTAL_SIMULATE_WORKERS=true for end-to-end local demos.
     simulate_workers: bool = False
+    # When false, refuse to boot with the default HMAC secret.
+    allow_insecure_defaults: bool = True
     jenkins_url: str | None = None
     jenkins_username: str | None = None
     jenkins_api_token: str | None = None
+    # Git resolve: placeholder | ls_remote | http_api
+    git_resolve_mode: str = "placeholder"
+    git_url_template: str | None = None  # https://git.internal/{repository}.git
+    git_http_base_url: str | None = None
+    git_token: str | None = None
+    git_require_exact: bool = False
+
+    @property
+    def is_default_hmac_secret(self) -> bool:
+        return self.callback_hmac_secret == "dev-callback-secret-change-me"
 
 
 @lru_cache

@@ -23,16 +23,36 @@ COLD_ENV = {
 def _client(tmp_path, *, simulate: bool = False):
     get_settings.cache_clear()
     reset_jenkins_client()
-    # Rebuild settings with env-like override by constructing Settings after monkeypatching is hard;
-    # mutate cached settings object after create_app... create_app calls get_settings once.
-    # So set env via os.environ before cache clear.
     import os
 
+    prev_sim = os.environ.get("PORTAL_SIMULATE_WORKERS")
+    prev_roles = os.environ.get("PORTAL_DEFAULT_ACTOR_ROLES")
     os.environ["PORTAL_SIMULATE_WORKERS"] = "true" if simulate else "false"
+    # Simulate API requires operator/admin; grant for local sim tests.
+    os.environ["PORTAL_DEFAULT_ACTOR_ROLES"] = "operator,builder"
     get_settings.cache_clear()
     db_path = tmp_path / "sim.db"
     app = create_app(database_url=f"sqlite:///{db_path}")
-    return TestClient(app)
+    client = TestClient(app)
+
+    class _Guarded:
+        def __enter__(self):
+            return client.__enter__()
+
+        def __exit__(self, *args):
+            result = client.__exit__(*args)
+            get_settings.cache_clear()
+            if prev_sim is None:
+                os.environ.pop("PORTAL_SIMULATE_WORKERS", None)
+            else:
+                os.environ["PORTAL_SIMULATE_WORKERS"] = prev_sim
+            if prev_roles is None:
+                os.environ.pop("PORTAL_DEFAULT_ACTOR_ROLES", None)
+            else:
+                os.environ["PORTAL_DEFAULT_ACTOR_ROLES"] = prev_roles
+            return result
+
+    return _Guarded()
 
 
 def test_manual_auto_simulate_cold_to_succeeded(tmp_path):
@@ -50,6 +70,8 @@ def test_manual_auto_simulate_cold_to_succeeded(tmp_path):
         ).json()
         assert created["status"] == "IMAGE_BUILD_QUEUED"
 
+        # Enable simulation for the explicit endpoint only (no background auto on create).
+        client.app.state.settings.simulate_workers = True
         advanced = client.post(f"/api/v1/build-requests/{created['id']}/simulate").json()
         assert advanced["finalStatus"] == "SUCCEEDED"
         assert any("factory" in step for step in advanced["steps"])
@@ -84,6 +106,7 @@ def test_preset_reuse_simulate_project_only(tmp_path):
         assert created["status"] == "BUILD_QUEUED"
         assert created["matchType"] == "EXACT"
 
+        client.app.state.settings.simulate_workers = True
         advanced = client.post(f"/api/v1/build-requests/{created['id']}/simulate").json()
         assert advanced["finalStatus"] == "SUCCEEDED"
 

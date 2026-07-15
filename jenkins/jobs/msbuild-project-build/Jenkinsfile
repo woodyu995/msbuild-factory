@@ -1,0 +1,206 @@
+#!/usr/bin/env groovy
+/**
+ * msbuild-project-build
+ *
+ * Uses Portal /pod-template YAML and Windows helper scripts for checkout/restore/msbuild.
+ * Scripts are read from this repo on the controller/agent, then written into the Windows pod workspace.
+ *
+ * Secrets are scoped with withCredentials around the steps that need them so
+ * checkout/MSBuild of untrusted project code does not see PORTAL_HMAC_SECRET.
+ *
+ * When Portal PORTAL_REQUIRE_AUTH=true, resolve/pod-template need portal-api-token
+ * (Bearer). Internal build-events still use HMAC only.
+ */
+pipeline {
+  agent { label 'linux || built-in' }
+
+  options {
+    timestamps()
+    timeout(time: 2, unit: HOURS)
+  }
+
+  parameters {
+    string(name: 'BUILD_REQUEST_ID', defaultValue: '', description: 'Portal build request id')
+  }
+
+  environment {
+    PORTAL_BASE_URL = credentials('portal-base-url')
+  }
+
+  stages {
+    stage('Resolve + Windows build') {
+      steps {
+        script {
+          if (!params.BUILD_REQUEST_ID?.trim()) {
+            error('BUILD_REQUEST_ID is required')
+          }
+
+          def metaText
+          withCredentials([string(credentialsId: 'portal-api-token', variable: 'PORTAL_API_TOKEN')]) {
+            metaText = sh(
+              returnStdout: true,
+              script: """
+                python3 jenkins/shared-library/scripts/portal_project_agent.py \\
+                  resolve \\
+                  --portal-url "\$PORTAL_BASE_URL" \\
+                  --api-token "\$PORTAL_API_TOKEN" \\
+                  --request-id "\$BUILD_REQUEST_ID"
+              """
+            ).trim()
+          }
+          writeFile file: 'request-meta.json', text: metaText
+          def meta = readJSON file: 'request-meta.json'
+          if (!meta.imageDigest) {
+            error("Portal request ${params.BUILD_REQUEST_ID} has no imageDigest yet")
+          }
+          if ((meta.resolvedCommit ?: '').startsWith('resolved:')) {
+            error("Commit not exactly resolved (${meta.resolvedCommit}). Configure Portal git resolve mode.")
+          }
+          if (!(meta.resolvedCommit ?: '').matches(/^[0-9a-fA-F]{40}$/)) {
+            error("resolvedCommit must be a 40-char SHA: ${meta.resolvedCommit}")
+          }
+
+          def checkoutPs1 = readFile('jenkins/shared-library/scripts/windows/Checkout-Commit.ps1')
+          def restorePs1 = readFile('jenkins/shared-library/scripts/windows/Restore-NuGet.ps1')
+          def msbuildPs1 = readFile('jenkins/shared-library/scripts/windows/Invoke-MSBuild.ps1')
+          def projectAgent = readFile('jenkins/shared-library/scripts/portal_project_agent.py')
+
+          def podYaml
+          withCredentials([string(credentialsId: 'portal-api-token', variable: 'PORTAL_API_TOKEN')]) {
+            podYaml = sh(
+              returnStdout: true,
+              script: """
+                python3 jenkins/shared-library/scripts/portal_project_agent.py \\
+                  pod-template \\
+                  --portal-url "\$PORTAL_BASE_URL" \\
+                  --api-token "\$PORTAL_API_TOKEN" \\
+                  --request-id "\$BUILD_REQUEST_ID" \\
+                  --format yaml
+              """
+            ).trim()
+          }
+          if (!podYaml.contains('Start-Sleep')) {
+            podYaml = podYaml.replaceFirst(
+              /(?m)^(\\s*)name:\\s*builder\\s*$/,
+              '''\$1name: builder
+\$1command:
+\$1  - powershell
+\$1args:
+\$1  - -Command
+\$1  - Start-Sleep -Seconds 86400'''
+            )
+          }
+          writeFile file: 'pod-template.yaml', text: podYaml
+
+          podTemplate(yaml: podYaml) {
+            node(POD_LABEL) {
+              container('builder') {
+                writeFile file: 'portal-tools/windows/Checkout-Commit.ps1', text: checkoutPs1
+                writeFile file: 'portal-tools/windows/Restore-NuGet.ps1', text: restorePs1
+                writeFile file: 'portal-tools/windows/Invoke-MSBuild.ps1', text: msbuildPs1
+                writeFile file: 'portal-tools/portal_project_agent.py', text: projectAgent
+
+                withEnv([
+                  "REPO=${meta.repository}",
+                  "COMMIT=${meta.resolvedCommit}",
+                  "SOLUTION=${meta.solutionPath}",
+                  "CONFIGURATION=${meta.configuration ?: 'Release'}",
+                  "PLATFORM=${meta.platform ?: 'x64'}",
+                  "NUGET_MODE=${meta.nugetMode ?: 'repo-packages-and-internal-feed'}",
+                ]) {
+                  // Status: BUILDING (HMAC only for this step)
+                  withCredentials([string(credentialsId: 'portal-callback-hmac', variable: 'PORTAL_HMAC_SECRET')]) {
+                    powershell '''
+                      $tools = Join-Path $env:WORKSPACE "portal-tools"
+                      if (-not (Test-Path $tools)) { $tools = "portal-tools" }
+                      python $tools\\portal_project_agent.py `
+                        event `
+                        --portal-url $env:PORTAL_BASE_URL `
+                        --hmac-secret $env:PORTAL_HMAC_SECRET `
+                        --request-id $env:BUILD_REQUEST_ID `
+                        --event-type BUILDING `
+                        --message "Project build started" `
+                        --build-number $env:BUILD_NUMBER
+                    '''
+                  }
+
+                  // Checkout (git URL template only)
+                  withCredentials([string(credentialsId: 'git-url-template', variable: 'GIT_URL_TEMPLATE')]) {
+                    powershell '''
+                      $tools = Join-Path $env:WORKSPACE "portal-tools"
+                      if (-not (Test-Path $tools)) { $tools = "portal-tools" }
+                      powershell -File $tools\\windows\\Checkout-Commit.ps1 `
+                        -Repository $env:REPO `
+                        -Commit $env:COMMIT `
+                        -GitUrlTemplate $env:GIT_URL_TEMPLATE `
+                        -WorkDir C:\\workspace\\src
+                    '''
+                  }
+
+                  // Restore (NuGet feed only)
+                  withCredentials([string(credentialsId: 'nuget-internal-feed-url', variable: 'NUGET_INTERNAL_FEED')]) {
+                    powershell '''
+                      $tools = Join-Path $env:WORKSPACE "portal-tools"
+                      if (-not (Test-Path $tools)) { $tools = "portal-tools" }
+                      powershell -File $tools\\windows\\Restore-NuGet.ps1 `
+                        -WorkDir C:\\workspace\\src `
+                        -SolutionPath $env:SOLUTION `
+                        -NugetMode $env:NUGET_MODE `
+                        -InternalFeedUrl $env:NUGET_INTERNAL_FEED
+                    '''
+                  }
+
+                  // MSBuild — no Portal HMAC / git / nuget secrets in env
+                  powershell '''
+                    $tools = Join-Path $env:WORKSPACE "portal-tools"
+                    if (-not (Test-Path $tools)) { $tools = "portal-tools" }
+                    powershell -File $tools\\windows\\Invoke-MSBuild.ps1 `
+                      -WorkDir C:\\workspace\\src `
+                      -SolutionPath $env:SOLUTION `
+                      -Configuration $env:CONFIGURATION `
+                      -Platform $env:PLATFORM
+                  '''
+
+                  // Honest terminal: MSBuild done. Tests/publish are not wired yet.
+                  withCredentials([string(credentialsId: 'portal-callback-hmac', variable: 'PORTAL_HMAC_SECRET')]) {
+                    powershell '''
+                      $tools = Join-Path $env:WORKSPACE "portal-tools"
+                      if (-not (Test-Path $tools)) { $tools = "portal-tools" }
+                      python $tools\\portal_project_agent.py `
+                        event `
+                        --portal-url $env:PORTAL_BASE_URL `
+                        --hmac-secret $env:PORTAL_HMAC_SECRET `
+                        --request-id $env:BUILD_REQUEST_ID `
+                        --event-type SUCCEEDED `
+                        --message "MSBuild completed (tests/publish not configured in pipeline)" `
+                        --build-number $env:BUILD_NUMBER
+                    '''
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  post {
+    failure {
+      withCredentials([string(credentialsId: 'portal-callback-hmac', variable: 'PORTAL_HMAC_SECRET')]) {
+        sh '''
+          if [ -n "$BUILD_REQUEST_ID" ] && [ -n "$PORTAL_BASE_URL" ]; then
+            python3 jenkins/shared-library/scripts/portal_project_agent.py \
+              event \
+              --portal-url "$PORTAL_BASE_URL" \
+              --hmac-secret "$PORTAL_HMAC_SECRET" \
+              --request-id "$BUILD_REQUEST_ID" \
+              --event-type PROJECT_BUILD_FAILED \
+              --message "Jenkins project pipeline failed" \
+              --build-number "$BUILD_NUMBER" || true
+          fi
+        '''
+      }
+    }
+  }
+}

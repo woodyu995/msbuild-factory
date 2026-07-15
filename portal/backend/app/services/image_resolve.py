@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -123,17 +124,21 @@ def apply_image_status_callback(
     capability_profile: dict[str, Any] | None = None,
     message: str | None = None,
 ) -> tuple[BuildImage, list[str]]:
-    row = session.scalar(
-        select(BuildImage).where(
-            BuildImage.profile_hash == profile_hash,
-            BuildImage.status != "DELETED",
-        )
-    )
+    from app.services.factory import get_active_image
+
+    row = get_active_image(session, profile_hash, for_update=True)
     if row is None:
         raise LookupError("image not found")
-    if row.lease_id and lease_id != row.lease_id:
-        raise PermissionError("stale leaseId")
+    # Lease CAS: mutating callbacks require an active, unexpired lease that matches exactly.
+    if not row.lease_id or lease_id != row.lease_id:
+        raise PermissionError("stale or missing leaseId")
     now = utcnow()
+    expires = row.lease_expires_at
+    if expires is not None:
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        if expires <= now:
+            raise PermissionError("lease expired")
     row.updated_at = now
     affected: list[str] = []
 

@@ -11,11 +11,13 @@ def reconcile_expired_leases(session: Session) -> dict:
     """Mark expired CREATING/VALIDATING leases as FAILED and fail waiters."""
     now = utcnow()
     rows = session.scalars(
-        select(BuildImage).where(
+        select(BuildImage)
+        .where(
             BuildImage.status.in_(["CREATING", "VALIDATING"]),
             BuildImage.lease_expires_at.is_not(None),
             BuildImage.lease_expires_at < now,
         )
+        .with_for_update()
     ).all()
     failed: list[str] = []
     woken: list[str] = []

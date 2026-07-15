@@ -17,15 +17,18 @@ from app.api.schemas import (
     ValidateResponse,
 )
 from app.domain.profile_resolver import ProfileRejected
+from app.domain.project_validation import InvalidProjectInput
+from app.domain.git_resolve import GitResolveError
 from app.security.hmac_auth import CallbackAuthError, verify_hmac
 from app.services.build_requests import (
+    IdempotencyConflict,
     apply_build_event_callback,
     create_build_request,
     get_build_request,
     is_factory_enabled,
     list_events,
 )
-from app.services.factory import build_factory_artifacts, heartbeat_lease
+from app.services.factory import build_factory_artifacts, heartbeat_lease, require_active_factory_lease
 from app.services.image_resolve import apply_image_status_callback, resolve_image
 from app.services.reconcile import reconcile_expired_leases
 from app.services.simulation import auto_advance_request, simulate_factory_run, simulate_project_build
@@ -63,15 +66,39 @@ def get_settings(request: Request):
 def actor_from_headers(
     request: Request,
     x_actor: Annotated[str | None, Header()] = None,
-) -> str:
+    authorization: Annotated[str | None, Header()] = None,
+):
+    from app.security.actors import (
+        Actor,
+        constant_time_token_lookup,
+        extract_bearer,
+        parse_api_tokens,
+    )
+
     settings = request.app.state.settings
-    if settings.require_auth and not x_actor:
-        raise HTTPException(status_code=401, detail="authentication required")
-    return x_actor or settings.default_actor
+    tokens = parse_api_tokens(settings.api_tokens)
+    bearer = extract_bearer(authorization)
+    if bearer:
+        if not tokens:
+            raise HTTPException(
+                status_code=401,
+                detail="Bearer provided but PORTAL_API_TOKENS is not configured",
+            )
+        actor = constant_time_token_lookup(tokens, bearer)
+        if actor is None:
+            raise HTTPException(status_code=401, detail="invalid API token")
+        return actor
+    if settings.require_auth:
+        raise HTTPException(status_code=401, detail="Bearer token required")
+    roles = frozenset(
+        r.strip() for r in (settings.default_actor_roles or "builder").split(",") if r.strip()
+    )
+    return Actor(name=x_actor or settings.default_actor, roles=roles)
 
 
 def _request_to_response(row, session: Session) -> BuildRequestResponse:
     image = None
+    windows_base = None
     if row.image_digest and row.matched_profile_hash:
         from sqlalchemy import select
         from app.db.models import BuildImage
@@ -85,14 +112,27 @@ def _request_to_response(row, session: Session) -> BuildRequestResponse:
                 tag=img.image_tag,
                 digest=img.image_digest,
             )
+            windows_base = img.windows_base
+    elif row.matched_profile_hash:
+        from sqlalchemy import select
+        from app.db.models import BuildImage
+
+        img = session.scalar(
+            select(BuildImage).where(BuildImage.profile_hash == row.matched_profile_hash)
+        )
+        if img:
+            windows_base = img.windows_base
+
     provided = json.loads(row.provided_capabilities_json or "[]")
     extra = json.loads(row.extra_capabilities_json or "[]")
+    environment = json.loads(row.environment_json) if row.environment_json else None
     return BuildRequestResponse(
         id=row.id,
         status=row.status,
         repository=row.repository,
         gitRef=row.git_ref,
         resolvedCommit=row.resolved_commit,
+        commitResolution=getattr(row, "commit_resolution", None),
         solutionPath=row.solution_path,
         configuration=row.configuration,
         platform=row.platform,
@@ -109,11 +149,16 @@ def _request_to_response(row, session: Session) -> BuildRequestResponse:
         errorCode=row.error_code,
         errorMessage=row.error_message,
         image=image,
+        windowsBase=windows_base,
+        environment=environment,
     )
 
 
 @router.get("/api/v1/build-environment/options")
-def options(request: Request):
+def options(
+    request: Request,
+    actor: Annotated[object, Depends(actor_from_headers)],
+):
     catalog = get_catalog(request)
     settings = get_settings(request)
     visual_studios = []
@@ -142,11 +187,17 @@ def options(request: Request):
         "estimatedImageBuildMinutes": catalog.estimated_minutes,
         "mvpFactoryEnabled": is_factory_enabled(catalog, settings),
         "simulateWorkers": settings.simulate_workers,
+        "requireAuth": settings.require_auth,
     }
 
 
 @router.post("/api/v1/build-environment/validate", response_model=ValidateResponse)
-def validate(body: ValidateRequest, request: Request, session: SessionDep):
+def validate(
+    body: ValidateRequest,
+    request: Request,
+    session: SessionDep,
+    actor: Annotated[object, Depends(actor_from_headers)],
+):
     catalog = get_catalog(request)
     settings = get_settings(request)
     env = body.environment.model_dump()
@@ -206,21 +257,27 @@ def create_request(
     request: Request,
     session: SessionDep,
     background_tasks: BackgroundTasks,
-    actor: Annotated[str, Depends(actor_from_headers)],
+    actor: Annotated[object, Depends(actor_from_headers)],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
     catalog = get_catalog(request)
     settings = get_settings(request)
+    actor_name = getattr(actor, "name", str(actor))
     try:
         row = create_build_request(
             session,
             catalog,
             payload=body.model_dump(),
-            actor=actor,
+            actor=actor_name,
             idempotency_key=idempotency_key,
             factory_enabled_override=settings.factory_enabled,
+            git_resolver=request.app.state.git_resolver,
         )
     except ProfileRejected as exc:
+        raise HTTPException(status_code=400, detail={"code": exc.code, "message": exc.message}) from exc
+    except IdempotencyConflict as exc:
+        raise HTTPException(status_code=409, detail={"code": exc.code, "message": exc.message}) from exc
+    except (InvalidProjectInput, GitResolveError) as exc:
         raise HTTPException(status_code=400, detail={"code": exc.code, "message": exc.message}) from exc
 
     maybe_schedule_auto_advance(
@@ -235,15 +292,60 @@ def create_request(
 
 
 @router.get("/api/v1/build-requests/{request_id}", response_model=BuildRequestResponse)
-def get_request(request_id: str, session: SessionDep):
+def get_request(
+    request_id: str,
+    session: SessionDep,
+    actor: Annotated[object, Depends(actor_from_headers)],
+):
     row = get_build_request(session, request_id)
     if row is None:
         raise HTTPException(status_code=404, detail="build request not found")
     return _request_to_response(row, session)
 
 
+@router.get("/api/v1/build-requests/{request_id}/pod-template")
+def get_pod_template(
+    request_id: str,
+    session: SessionDep,
+    actor: Annotated[object, Depends(actor_from_headers)],
+    format: str = "yaml",
+):
+    from fastapi.responses import PlainTextResponse, JSONResponse
+    from app.domain.pod_template import render_windows_builder_pod, render_windows_builder_pod_yaml
+
+    row = get_build_request(session, request_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="build request not found")
+    response = _request_to_response(row, session)
+    if not response.imageDigest:
+        raise HTTPException(status_code=409, detail="image digest not resolved yet")
+    windows_base = response.windowsBase or "ltsc2022"
+    try:
+        if format == "json":
+            return JSONResponse(
+                render_windows_builder_pod(
+                    image_digest=response.imageDigest,
+                    windows_base=windows_base,
+                    request_id=request_id,
+                )
+            )
+        yaml_text = render_windows_builder_pod_yaml(
+            image_digest=response.imageDigest,
+            windows_base=windows_base,
+            request_id=request_id,
+        )
+        return PlainTextResponse(yaml_text, media_type="application/yaml")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/api/v1/build-requests/{request_id}/events")
-async def request_events(request_id: str, request: Request, session: SessionDep):
+async def request_events(
+    request_id: str,
+    request: Request,
+    session: SessionDep,
+    actor: Annotated[object, Depends(actor_from_headers)],
+):
     from fastapi.responses import StreamingResponse
     import asyncio
 
@@ -325,6 +427,8 @@ async def internal_build_events(request: Request, session: SessionDep):
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"ok": True, "status": row.status}
 
 
@@ -357,8 +461,20 @@ async def internal_image_status(profile_hash: str, request: Request, session: Se
     }
 
 
-@router.get("/internal/v1/images/{profile_hash}/factory-artifacts")
-def factory_artifacts(profile_hash: str, session: SessionDep):
+@router.post("/internal/v1/images/{profile_hash}/factory-artifacts")
+async def factory_artifacts(profile_hash: str, request: Request, session: SessionDep):
+    raw = await request.body()
+    _verify_callback(request, raw)
+    payload = json.loads(raw.decode("utf-8") or "{}")
+    lease_id = payload.get("leaseId")
+    if not lease_id:
+        raise HTTPException(status_code=400, detail="leaseId required")
+    try:
+        require_active_factory_lease(session, profile_hash, lease_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     profile = session.scalar(select(BuildProfile).where(BuildProfile.profile_hash == profile_hash))
     if profile is None:
         raise HTTPException(status_code=404, detail="profile not found")
@@ -387,12 +503,28 @@ async def factory_heartbeat(profile_hash: str, request: Request, session: Sessio
 
 
 @router.post("/internal/v1/reconcile/leases")
-def reconcile_leases(session: SessionDep):
+async def reconcile_leases(request: Request, session: SessionDep):
+    raw = await request.body()
+    _verify_callback(request, raw)
     return reconcile_expired_leases(session)
 
 
+def _require_simulation_enabled(request: Request, actor=None) -> None:
+    settings = get_settings(request)
+    if not settings.simulate_workers:
+        raise HTTPException(
+            status_code=403,
+            detail="simulation disabled; set PORTAL_SIMULATE_WORKERS=true for local only",
+        )
+    if actor is not None and hasattr(actor, "can_simulate") and not actor.can_simulate:
+        raise HTTPException(status_code=403, detail="actor not allowed to simulate")
+
+
 @router.post("/internal/v1/simulate/factory/{profile_hash}")
-def simulate_factory(profile_hash: str, request: Request, session: SessionDep):
+async def simulate_factory(profile_hash: str, request: Request, session: SessionDep):
+    raw = await request.body()
+    _verify_callback(request, raw)
+    _require_simulation_enabled(request)
     catalog = get_catalog(request)
     try:
         return simulate_factory_run(session, catalog, profile_hash=profile_hash)
@@ -403,7 +535,10 @@ def simulate_factory(profile_hash: str, request: Request, session: SessionDep):
 
 
 @router.post("/internal/v1/simulate/build-requests/{request_id}")
-def simulate_build(request_id: str, session: SessionDep, fail: bool = False):
+async def simulate_build(request_id: str, request: Request, session: SessionDep, fail: bool = False):
+    raw = await request.body()
+    _verify_callback(request, raw)
+    _require_simulation_enabled(request)
     try:
         return simulate_project_build(session, request_id=request_id, fail=fail)
     except LookupError as exc:
@@ -413,7 +548,10 @@ def simulate_build(request_id: str, session: SessionDep, fail: bool = False):
 
 
 @router.post("/internal/v1/simulate/build-requests/{request_id}/auto")
-def simulate_auto(request_id: str, request: Request, session: SessionDep):
+async def simulate_auto(request_id: str, request: Request, session: SessionDep):
+    raw = await request.body()
+    _verify_callback(request, raw)
+    _require_simulation_enabled(request)
     catalog = get_catalog(request)
     try:
         return auto_advance_request(session, catalog, request_id=request_id)
@@ -424,8 +562,14 @@ def simulate_auto(request_id: str, request: Request, session: SessionDep):
 
 
 @router.post("/api/v1/build-requests/{request_id}/simulate")
-def simulate_request_from_api(request_id: str, request: Request, session: SessionDep):
+def simulate_request_from_api(
+    request_id: str,
+    request: Request,
+    session: SessionDep,
+    actor: Annotated[object, Depends(actor_from_headers)],
+):
     """Dev helper: advance factory/project simulation for a request."""
+    _require_simulation_enabled(request, actor)
     catalog = get_catalog(request)
     try:
         return auto_advance_request(session, catalog, request_id=request_id)
