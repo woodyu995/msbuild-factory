@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     # MVP auth bypass for local UI; set PORTAL_REQUIRE_AUTH=true in prod-like envs
     require_auth: bool = False
     default_actor: str = "local-dev"
+    # None = follow catalog.mvpFactoryEnabled; True/False overrides
+    factory_enabled: bool | None = None
+    factory_lease_minutes: int = 135
 
 
 @lru_cache

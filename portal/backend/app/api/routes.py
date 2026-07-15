@@ -22,9 +22,14 @@ from app.services.build_requests import (
     apply_build_event_callback,
     create_build_request,
     get_build_request,
+    is_factory_enabled,
     list_events,
 )
+from app.services.factory import build_factory_artifacts, heartbeat_lease
 from app.services.image_resolve import apply_image_status_callback, resolve_image
+from app.services.reconcile import reconcile_expired_leases
+from app.db.models import BuildProfile
+from sqlalchemy import select
 
 router = APIRouter()
 
@@ -108,6 +113,7 @@ def _request_to_response(row, session: Session) -> BuildRequestResponse:
 @router.get("/api/v1/build-environment/options")
 def options(request: Request):
     catalog = get_catalog(request)
+    settings = get_settings(request)
     visual_studios = []
     for vs_id, entry in catalog.visual_studio.items():
         visual_studios.append(
@@ -132,16 +138,22 @@ def options(request: Request):
         "compatibilityRules": catalog.compatibility_rules,
         "capabilityMatching": catalog.capability_matching,
         "estimatedImageBuildMinutes": catalog.estimated_minutes,
-        "mvpFactoryEnabled": catalog.mvp_factory_enabled,
+        "mvpFactoryEnabled": is_factory_enabled(catalog, settings),
     }
 
 
 @router.post("/api/v1/build-environment/validate", response_model=ValidateResponse)
 def validate(body: ValidateRequest, request: Request, session: SessionDep):
     catalog = get_catalog(request)
+    settings = get_settings(request)
     env = body.environment.model_dump()
     try:
-        resolved, match, action = resolve_image(session, catalog, env)
+        resolved, match, action = resolve_image(
+            session,
+            catalog,
+            env,
+            factory_enabled_override=settings.factory_enabled,
+        )
     except ProfileRejected as exc:
         return ValidateResponse(
             valid=False,
@@ -161,7 +173,7 @@ def validate(body: ValidateRequest, request: Request, session: SessionDep):
             estimatedWaitMinutes=wait,
             errorCode="IMAGE_CREATION_REQUIRED" if action == "IMAGE_CREATION_REQUIRED" else "NO_MATCH",
             errorMessage=(
-                "No compatible READY image; factory disabled in MVP"
+                "No compatible READY image; factory disabled"
                 if action == "REJECTED"
                 else "Image creation required"
             ),
@@ -194,6 +206,7 @@ def create_request(
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
     catalog = get_catalog(request)
+    settings = get_settings(request)
     try:
         row = create_build_request(
             session,
@@ -201,6 +214,7 @@ def create_request(
             payload=body.model_dump(),
             actor=actor,
             idempotency_key=idempotency_key,
+            factory_enabled_override=settings.factory_enabled,
         )
     except ProfileRejected as exc:
         raise HTTPException(status_code=400, detail={"code": exc.code, "message": exc.message}) from exc
@@ -307,7 +321,7 @@ async def internal_image_status(profile_hash: str, request: Request, session: Se
     _verify_callback(request, raw)
     payload = InternalImageStatus.model_validate_json(raw)
     try:
-        row = apply_image_status_callback(
+        row, affected = apply_image_status_callback(
             session,
             profile_hash=profile_hash,
             lease_id=payload.leaseId,
@@ -322,4 +336,43 @@ async def internal_image_status(profile_hash: str, request: Request, session: Se
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"ok": True, "status": row.status, "profileHash": row.profile_hash}
+    return {
+        "ok": True,
+        "status": row.status,
+        "profileHash": row.profile_hash,
+        "affectedRequestIds": affected,
+    }
+
+
+@router.get("/internal/v1/images/{profile_hash}/factory-artifacts")
+def factory_artifacts(profile_hash: str, session: SessionDep):
+    profile = session.scalar(select(BuildProfile).where(BuildProfile.profile_hash == profile_hash))
+    if profile is None:
+        raise HTTPException(status_code=404, detail="profile not found")
+    build_input = json.loads(profile.normalized_profile_json)
+    return build_factory_artifacts(build_input, profile_hash)
+
+
+@router.post("/internal/v1/images/{profile_hash}/heartbeat")
+async def factory_heartbeat(profile_hash: str, request: Request, session: SessionDep):
+    raw = await request.body()
+    _verify_callback(request, raw)
+    payload = json.loads(raw.decode("utf-8"))
+    lease_id = payload.get("leaseId")
+    if not lease_id:
+        raise HTTPException(status_code=400, detail="leaseId required")
+    try:
+        row = heartbeat_lease(session, profile_hash, lease_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        "leaseExpiresAt": row.lease_expires_at.isoformat() if row.lease_expires_at else None,
+    }
+
+
+@router.post("/internal/v1/reconcile/leases")
+def reconcile_leases(session: SessionDep):
+    return reconcile_expired_leases(session)

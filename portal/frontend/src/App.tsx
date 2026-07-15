@@ -325,7 +325,19 @@ export default function App() {
           {buildResult && (
             <div className="result" style={{ marginTop: "1.25rem" }}>
               <h2>Build request</h2>
-              <span className={`badge ${buildResult.status === "BUILD_QUEUED" ? "ok" : "warn"}`}>
+              <span
+                className={`badge ${
+                  ["BUILD_QUEUED", "SUCCEEDED"].includes(buildResult.status)
+                    ? "ok"
+                    : ["IMAGE_BUILD_QUEUED", "IMAGE_WAITING", "IMAGE_BUILDING", "IMAGE_VALIDATING"].includes(
+                          buildResult.status,
+                        )
+                      ? "warn"
+                      : buildResult.status.includes("FAIL") || buildResult.status.includes("REJECT")
+                        ? "err"
+                        : "warn"
+                }`}
+              >
                 {buildResult.status}
               </span>
               <div>

@@ -15,6 +15,9 @@ import time
 @pytest.fixture()
 def client(tmp_path: Path):
     get_settings.cache_clear()
+    from app.services.jenkins import reset_jenkins_client
+
+    reset_jenkins_client()
     db_path = tmp_path / "test.db"
     app = create_app(database_url=f"sqlite:///{db_path}")
     with TestClient(app) as test_client:
@@ -28,7 +31,7 @@ def test_options_contains_presets(client: TestClient):
     data = resp.json()
     assert data["catalogVersion"] == "2026.07"
     assert len(data["presets"]) == 4
-    assert data["mvpFactoryEnabled"] is False
+    assert data["mvpFactoryEnabled"] is True
 
 
 def test_validate_exact_preset(client: TestClient):

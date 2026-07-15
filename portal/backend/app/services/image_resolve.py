@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -9,8 +8,9 @@ from sqlalchemy.orm import Session
 
 from app.domain.capability_matcher import MatchCandidate, MatchResult, match_images
 from app.domain.catalog import Catalog
-from app.domain.profile_resolver import ProfileRejected, ResolvedProfile, resolve_profile
+from app.domain.profile_resolver import ResolvedProfile, resolve_profile
 from app.db.models import BuildImage, BuildProfile, utcnow
+from app.services.factory import replace_capability_rows, wake_waiters_for_image
 
 
 def capability_from_environment(resolved: ResolvedProfile) -> dict[str, Any]:
@@ -71,10 +71,18 @@ def list_match_candidates(session: Session) -> list[MatchCandidate]:
     return candidates
 
 
+def factory_enabled(catalog: Catalog, settings_override: bool | None = None) -> bool:
+    if settings_override is not None:
+        return settings_override
+    return bool(catalog.mvp_factory_enabled)
+
+
 def resolve_image(
     session: Session,
     catalog: Catalog,
     environment: dict[str, Any],
+    *,
+    factory_enabled_override: bool | None = None,
 ) -> tuple[ResolvedProfile, MatchResult | None, str]:
     """Returns resolved profile, optional match, and action string."""
     resolved = resolve_profile(catalog, environment)
@@ -87,7 +95,7 @@ def resolve_image(
         reuse_mode=reuse_mode,
     )
     if match is None:
-        if catalog.mvp_factory_enabled:
+        if factory_enabled(catalog, factory_enabled_override):
             action = "IMAGE_CREATION_REQUIRED"
         else:
             action = "REJECTED"
@@ -114,14 +122,21 @@ def apply_image_status_callback(
     image_digest: str | None = None,
     capability_profile: dict[str, Any] | None = None,
     message: str | None = None,
-) -> BuildImage:
-    row = session.scalar(select(BuildImage).where(BuildImage.profile_hash == profile_hash))
+) -> tuple[BuildImage, list[str]]:
+    row = session.scalar(
+        select(BuildImage).where(
+            BuildImage.profile_hash == profile_hash,
+            BuildImage.status != "DELETED",
+        )
+    )
     if row is None:
         raise LookupError("image not found")
     if row.lease_id and lease_id != row.lease_id:
         raise PermissionError("stale leaseId")
     now = utcnow()
     row.updated_at = now
+    affected: list[str] = []
+
     if status == "READY":
         if not image_digest or not capability_profile:
             raise ValueError("READY requires digest and capabilityProfile")
@@ -132,16 +147,29 @@ def apply_image_status_callback(
         row.lease_id = None
         row.lease_owner = None
         row.lease_expires_at = None
-    elif status in {"FAILED", "QUARANTINED", "VALIDATING", "CREATING"}:
+        replace_capability_rows(session, row, capability_profile)
+        affected = wake_waiters_for_image(session, row, success=True)
+    elif status == "VALIDATING":
+        row.status = "VALIDATING"
+    elif status == "CREATING":
+        row.status = "CREATING"
+    elif status in {"FAILED", "QUARANTINED"}:
         row.status = status
-        if status == "FAILED":
-            row.failure_code = "IMAGE_BUILD_FAILED"
-            row.retry_count = (row.retry_count or 0) + 1
-            row.lease_id = None
-            row.lease_owner = None
+        row.failure_code = "IMAGE_BUILD_FAILED" if status == "FAILED" else "QUARANTINED"
+        row.retry_count = (row.retry_count or 0) + 1
+        row.lease_id = None
+        row.lease_owner = None
+        row.lease_expires_at = None
+        affected = wake_waiters_for_image(
+            session,
+            row,
+            success=False,
+            failure_message=message or f"Image factory {status}",
+        )
     else:
         raise ValueError(f"unsupported status {status}")
+
     if message:
         row.validation_result_json = json.dumps({"message": message}, ensure_ascii=False)
     session.flush()
-    return row
+    return row, affected

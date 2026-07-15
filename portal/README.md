@@ -32,10 +32,13 @@ npm install
 npm run dev
 ```
 
-UI proxies `/api` to `http://127.0.0.1:8000`.
+          UI proxies `/api` to `http://127.0.0.1:8000`.
 
-## MVP scope notes
+          ## MVP / Phase 2 scope notes
 
-- `mvpFactoryEnabled: false` — unmatched profiles are rejected
-- Jenkins/Windows Pod execution is stubbed (`BUILD_QUEUED`); advance via HMAC callback
-- SSO/RBAC is not wired; send optional `X-Actor`
+          - `mvpFactoryEnabled: true` — cold profiles queue `msbuild-image-factory` (Jenkins stub)
+          - Exact waiters share one CREATING lease; READY callback wakes them to project build
+          - Factory artifacts: `GET /internal/v1/images/{hash}/factory-artifacts`
+          - Lease heartbeat + reconcile endpoints for callback loss / TTL expiry
+          - Windows Docker build host is still external (scripts under `image_factory/scripts`)
+          - SSO/RBAC is not wired; send optional `X-Actor`

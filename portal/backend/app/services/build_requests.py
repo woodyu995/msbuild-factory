@@ -10,30 +10,23 @@ from sqlalchemy.orm import Session
 from app.db.models import BuildEvent, BuildRequest, utcnow
 from app.domain.catalog import Catalog
 from app.domain.profile_resolver import ProfileRejected
-from app.services.image_resolve import ensure_profile_row, resolve_image, touch_image_usage
+from app.services.events import append_event
+from app.services.factory import (
+    FactoryBusy,
+    acquire_or_wait_factory,
+    queue_project_build,
+)
+from app.services.image_resolve import (
+    ensure_profile_row,
+    factory_enabled,
+    resolve_image,
+)
+from app.db.models import BuildImage
 
 
 def _new_request_id() -> str:
     stamp = utcnow().strftime("%Y%m%d")
     return f"br-{stamp}-{uuid.uuid4().hex[:6]}"
-
-
-def append_event(
-    session: Session,
-    request_id: str,
-    event_type: str,
-    message: str,
-    metadata: dict[str, Any] | None = None,
-) -> BuildEvent:
-    event = BuildEvent(
-        build_request_id=request_id,
-        event_type=event_type,
-        message=message,
-        metadata_json=json.dumps(metadata, ensure_ascii=False) if metadata else None,
-    )
-    session.add(event)
-    session.flush()
-    return event
 
 
 def create_build_request(
@@ -43,6 +36,7 @@ def create_build_request(
     payload: dict[str, Any],
     actor: str,
     idempotency_key: str | None = None,
+    factory_enabled_override: bool | None = None,
 ) -> BuildRequest:
     if idempotency_key:
         existing = session.scalar(
@@ -62,7 +56,6 @@ def create_build_request(
     }:
         raise ProfileRejected(f"unsupported nuget mode: {nuget_mode}")
 
-    # MVP: treat gitRef as resolved commit if it looks like SHA, else placeholder pin
     git_ref = project["gitRef"]
     resolved_commit = git_ref if len(git_ref) >= 40 else f"resolved:{git_ref}"
 
@@ -93,52 +86,59 @@ def create_build_request(
     request.status = "RESOLVING_IMAGE"
     append_event(session, request.id, "RESOLVING_IMAGE", "Resolving image via Exact/Capability matcher")
 
-    resolved, match, action = resolve_image(session, catalog, environment)
+    resolved, match, action = resolve_image(
+        session,
+        catalog,
+        environment,
+        factory_enabled_override=factory_enabled_override,
+    )
     ensure_profile_row(session, catalog, resolved, actor)
     request.requested_profile_hash = resolved.profile_hash
     request.reuse_mode = resolved.requested.get("reuseMode") or "preferCompatible"
 
     if match is None:
-        request.status = "PROFILE_REJECTED" if action == "REJECTED" else "IMAGE_BUILD_QUEUED"
-        request.error_code = "PROFILE_REJECTED" if action == "REJECTED" else "IMAGE_CREATION_REQUIRED"
-        request.error_message = (
-            "No compatible READY image and MVP factory is disabled"
-            if action == "REJECTED"
-            else "Image creation required"
-        )
-        request.finished_at = utcnow()
-        append_event(
-            session,
-            request.id,
-            request.status,
-            request.error_message,
-            {"action": action, "requestedProfileHash": resolved.profile_hash},
-        )
+        if action == "REJECTED":
+            request.status = "PROFILE_REJECTED"
+            request.error_code = "PROFILE_REJECTED"
+            request.error_message = "No compatible READY image and factory is disabled"
+            request.finished_at = utcnow()
+            append_event(
+                session,
+                request.id,
+                request.status,
+                request.error_message,
+                {"action": action, "requestedProfileHash": resolved.profile_hash},
+            )
+            session.flush()
+            return request
+
+        # Factory path
+        try:
+            acquire_or_wait_factory(session, catalog, resolved=resolved, request=request)
+        except FactoryBusy as exc:
+            request.status = "IMAGE_BUILD_QUEUED"
+            request.error_code = "FACTORY_BUSY"
+            request.error_message = str(exc)
+            append_event(session, request.id, "FACTORY_BUSY", str(exc))
         session.flush()
         return request
 
-    request.matched_profile_hash = match.candidate.profile_hash
-    request.match_type = match.match_type
-    request.image_digest = match.candidate.image_digest
-    request.provided_capabilities_json = json.dumps(match.provided_capabilities, ensure_ascii=False)
-    request.extra_capabilities_json = json.dumps(match.extra_capabilities, ensure_ascii=False)
-    touch_image_usage(session, match.candidate.profile_hash)
+    image = session.scalar(
+        select(BuildImage).where(
+            BuildImage.profile_hash == match.candidate.profile_hash,
+            BuildImage.status.in_(["READY", "DEPRECATED"]),
+        )
+    )
+    if image is None:
+        raise RuntimeError("matched image missing from database")
 
-    # MVP: no real Jenkins — mark as BUILD_QUEUED then SUCCEEDED simulation hook via callback
-    request.status = "BUILD_QUEUED"
-    request.jenkins_job_name = "msbuild-project-build"
-    append_event(
+    queue_project_build(
         session,
-        request.id,
-        "BUILD_QUEUED",
-        f"Matched image ({match.match_type})",
-        {
-            "matchType": match.match_type,
-            "matchedProfileHash": match.candidate.profile_hash,
-            "imageDigest": match.candidate.image_digest,
-            "providedCapabilities": match.provided_capabilities,
-            "extraCapabilities": match.extra_capabilities,
-        },
+        request,
+        image,
+        match_type=match.match_type,
+        provided=match.provided_capabilities,
+        extra=match.extra_capabilities,
     )
     session.flush()
     return request
@@ -199,3 +199,8 @@ def apply_build_event_callback(
     append_event(session, request.id, event_type, message, metadata)
     session.flush()
     return request
+
+
+def is_factory_enabled(catalog: Catalog, settings) -> bool:
+    override = getattr(settings, "factory_enabled", None)
+    return factory_enabled(catalog, override)

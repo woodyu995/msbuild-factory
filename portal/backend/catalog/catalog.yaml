@@ -155,8 +155,8 @@ estimatedImageBuildMinutes:
   hot: 0
   coldAverage: 75
 
-# MVP: factory closed — unmatched profiles are rejected
-mvpFactoryEnabled: false
+# Phase 2: on-demand factory orchestration enabled (Windows host still external)
+mvpFactoryEnabled: true
 mvpCompatibleWorkers:
   - ltsc2019
   - ltsc2022
