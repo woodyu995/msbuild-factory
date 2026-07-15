@@ -13,7 +13,8 @@ import time
 
 
 @pytest.fixture()
-def client(tmp_path: Path):
+def client(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("PORTAL_SIMULATE_WORKERS", "false")
     get_settings.cache_clear()
     from app.services.jenkins import reset_jenkins_client
 
@@ -23,6 +24,7 @@ def client(tmp_path: Path):
     with TestClient(app) as test_client:
         yield test_client
     get_settings.cache_clear()
+    monkeypatch.delenv("PORTAL_SIMULATE_WORKERS", raising=False)
 
 
 def test_options_contains_presets(client: TestClient):

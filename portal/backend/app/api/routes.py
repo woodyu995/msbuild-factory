@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.api.schemas import (
@@ -28,6 +28,8 @@ from app.services.build_requests import (
 from app.services.factory import build_factory_artifacts, heartbeat_lease
 from app.services.image_resolve import apply_image_status_callback, resolve_image
 from app.services.reconcile import reconcile_expired_leases
+from app.services.simulation import auto_advance_request, simulate_factory_run, simulate_project_build
+from app.services.worker_schedule import maybe_schedule_auto_advance
 from app.db.models import BuildProfile
 from sqlalchemy import select
 
@@ -139,6 +141,7 @@ def options(request: Request):
         "capabilityMatching": catalog.capability_matching,
         "estimatedImageBuildMinutes": catalog.estimated_minutes,
         "mvpFactoryEnabled": is_factory_enabled(catalog, settings),
+        "simulateWorkers": settings.simulate_workers,
     }
 
 
@@ -202,6 +205,7 @@ def create_request(
     body: BuildRequestCreate,
     request: Request,
     session: SessionDep,
+    background_tasks: BackgroundTasks,
     actor: Annotated[str, Depends(actor_from_headers)],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
@@ -218,6 +222,15 @@ def create_request(
         )
     except ProfileRejected as exc:
         raise HTTPException(status_code=400, detail={"code": exc.code, "message": exc.message}) from exc
+
+    maybe_schedule_auto_advance(
+        background_tasks=background_tasks,
+        settings=settings,
+        session_factory=request.app.state.session_factory,
+        catalog=catalog,
+        request_id=row.id,
+        status=row.status,
+    )
     return _request_to_response(row, session)
 
 
@@ -376,3 +389,47 @@ async def factory_heartbeat(profile_hash: str, request: Request, session: Sessio
 @router.post("/internal/v1/reconcile/leases")
 def reconcile_leases(session: SessionDep):
     return reconcile_expired_leases(session)
+
+
+@router.post("/internal/v1/simulate/factory/{profile_hash}")
+def simulate_factory(profile_hash: str, request: Request, session: SessionDep):
+    catalog = get_catalog(request)
+    try:
+        return simulate_factory_run(session, catalog, profile_hash=profile_hash)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/internal/v1/simulate/build-requests/{request_id}")
+def simulate_build(request_id: str, session: SessionDep, fail: bool = False):
+    try:
+        return simulate_project_build(session, request_id=request_id, fail=fail)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/internal/v1/simulate/build-requests/{request_id}/auto")
+def simulate_auto(request_id: str, request: Request, session: SessionDep):
+    catalog = get_catalog(request)
+    try:
+        return auto_advance_request(session, catalog, request_id=request_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/v1/build-requests/{request_id}/simulate")
+def simulate_request_from_api(request_id: str, request: Request, session: SessionDep):
+    """Dev helper: advance factory/project simulation for a request."""
+    catalog = get_catalog(request)
+    try:
+        return auto_advance_request(session, catalog, request_id=request_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

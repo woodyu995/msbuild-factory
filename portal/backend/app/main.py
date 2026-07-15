@@ -10,6 +10,7 @@ from app.api.routes import router
 from app.config import get_settings
 from app.db.models import make_session_factory
 from app.domain.catalog import load_catalog
+from app.services.jenkins import configure_jenkins_client
 from app.services.seed import seed_preset_images
 
 
@@ -22,6 +23,11 @@ def create_app(database_url: str | None = None, catalog_path: Path | None = None
     async def lifespan(app: FastAPI):
         catalog = load_catalog(Path(cat_path))
         session_factory = make_session_factory(db_url)
+        configure_jenkins_client(
+            base_url=settings.jenkins_url,
+            username=settings.jenkins_username,
+            api_token=settings.jenkins_api_token,
+        )
         app.state.settings = settings
         app.state.catalog = catalog
         app.state.session_factory = session_factory
@@ -42,7 +48,11 @@ def create_app(database_url: str | None = None, catalog_path: Path | None = None
 
     @app.get("/healthz")
     def healthz():
-        return {"status": "ok"}
+        return {
+            "status": "ok",
+            "simulateWorkers": settings.simulate_workers,
+            "jenkinsConfigured": bool(settings.jenkins_url and settings.jenkins_api_token),
+        }
 
     return app
 

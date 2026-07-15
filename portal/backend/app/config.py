@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     # None = follow catalog.mvpFactoryEnabled; True/False overrides
     factory_enabled: bool | None = None
     factory_lease_minutes: int = 135
+    # Local/dev: auto-simulate factory + project build after queueing
+    # Set PORTAL_SIMULATE_WORKERS=true for end-to-end local demos.
+    simulate_workers: bool = False
+    jenkins_url: str | None = None
+    jenkins_username: str | None = None
+    jenkins_api_token: str | None = None
 
 
 @lru_cache
