@@ -1,0 +1,162 @@
+catalogVersion: "2026.07"
+
+agentBases:
+  ltsc2019:
+    image: registry.internal/build/agent-base-ltsc2019
+    digest: "sha256:agent-base-ltsc2019-mvp0001"
+  ltsc2022:
+    image: registry.internal/build/agent-base-ltsc2022
+    digest: "sha256:agent-base-ltsc2022-mvp0001"
+
+baseImages:
+  ltsc2019:
+    digest: "sha256:windows-base-ltsc2019-mvp0001"
+  ltsc2022:
+    digest: "sha256:windows-base-ltsc2022-mvp0001"
+
+templateVersion: "image-template-3"
+installScriptVersion: "install-scripts-7"
+validationSuiteVersion: "validation-5"
+
+visualStudio:
+  "2019":
+    windowsBase: ltsc2019
+    layoutRelease: vs2019-16.11.54
+    layoutManifestDigest: "sha256:layout-2019-mvp0001"
+    allowed:
+      dotnetFrameworks: ["4.6", "4.6.2", "4.7.2", "4.8"]
+      dotnetSdks: []
+      cppToolsets: ["v142"]
+      windowsSdks: ["10.0.19041.0"]
+      features: ["managed-desktop", "mfc", "atl"]
+    componentIds:
+      msbuild: Microsoft.Component.MSBuild
+      managed-desktop: Microsoft.VisualStudio.Workload.ManagedDesktopBuildTools
+      cpp-v142: Microsoft.VisualStudio.Component.VC.Tools.x86.x64
+      mfc: Microsoft.VisualStudio.Component.VC.MFC
+      atl: Microsoft.VisualStudio.Component.VC.ATL
+      windows-sdk-19041: Microsoft.VisualStudio.Component.Windows10SDK.19041
+
+  "2022":
+    windowsBase: ltsc2022
+    layoutRelease: vs2022-17.14.x
+    layoutManifestDigest: "sha256:layout-2022-mvp0001"
+    allowed:
+      dotnetFrameworks: ["4.8"]
+      dotnetSdks: ["6.0", "8.0"]
+      cppToolsets: ["v142", "v143"]
+      windowsSdks: ["10.0.19041.0", "10.0.22621.0"]
+      features: ["managed-desktop", "mfc", "atl", "cpp-cli"]
+    componentIds:
+      msbuild: Microsoft.Component.MSBuild
+      managed-desktop: Microsoft.VisualStudio.Workload.ManagedDesktopBuildTools
+      cpp-v142: Microsoft.VisualStudio.Component.VC.Tools.x86.x64
+      cpp-v143: Microsoft.VisualStudio.Component.VC.Tools.x86.x64
+      mfc: Microsoft.VisualStudio.Component.VC.MFC
+      atl: Microsoft.VisualStudio.Component.VC.ATL
+      cpp-cli: Microsoft.VisualStudio.Component.VC.CLI.Support
+      windows-sdk-19041: Microsoft.VisualStudio.Component.Windows10SDK.19041
+      windows-sdk-22621: Microsoft.VisualStudio.Component.Windows11SDK.22621
+
+installers:
+  "4.6":
+    resolvedVersion: "4.6.0"
+    installerSha256: "sha256:net46-targeting-mvp0001"
+  "4.6.2":
+    resolvedVersion: "4.6.2"
+    installerSha256: "sha256:net462-targeting-mvp0001"
+  "4.7.2":
+    resolvedVersion: "4.7.2"
+    installerSha256: "sha256:net472-targeting-mvp0001"
+  "4.8":
+    resolvedVersion: "4.8.1"
+    installerSha256: "sha256:net48-targeting-mvp0001"
+  "6.0":
+    resolvedVersion: "6.0.428"
+    installerSha256: "sha256:dotnet-sdk-6-mvp0001"
+  "8.0":
+    resolvedVersion: "8.0.412"
+    installerSha256: "sha256:dotnet-sdk-8-mvp0001"
+  "10.0.19041.0":
+    resolvedVersion: "10.0.19041.0"
+    installerSha256: "sha256:winsdk-19041-mvp0001"
+  "10.0.22621.0":
+    resolvedVersion: "10.0.22621.0"
+    installerSha256: "sha256:winsdk-22621-mvp0001"
+
+compatibilityRules:
+  - when:
+      visualStudio: "2019"
+    deny:
+      cppToolsets: ["v143"]
+      dotnetSdks: ["6.0", "8.0"]
+  - when:
+      featuresIncludes: ["mfc"]
+    requireAny:
+      cppToolsets: ["v142", "v143"]
+  - when:
+      featuresIncludes: ["atl"]
+    requireAny:
+      cppToolsets: ["v142", "v143"]
+
+capabilityMatching:
+  visualStudioGeneration: exact
+  allowNewerVsForOlderProjects: false
+  dotnetSdk: exactPatchOrApprovedRollForward
+  cppToolset: exact
+  windowsSdk: exact
+  features: subsetRequired
+  customSdks: exactVersion
+  approvedSdkRollForward: []
+
+presets:
+  - id: managed-net46
+    displayName: "표준 .NET Framework 4.6"
+    hot: true
+    environment:
+      visualStudio: "2019"
+      dotnetFrameworks: ["4.6"]
+      dotnetSdks: []
+      cppToolsets: []
+      windowsSdks: []
+      features: ["managed-desktop"]
+  - id: managed-net48
+    displayName: "표준 .NET Framework 4.8"
+    hot: true
+    environment:
+      visualStudio: "2022"
+      dotnetFrameworks: ["4.8"]
+      dotnetSdks: []
+      cppToolsets: []
+      windowsSdks: []
+      features: ["managed-desktop"]
+  - id: managed-dotnet8
+    displayName: "표준 .NET 8 Windows"
+    hot: true
+    environment:
+      visualStudio: "2022"
+      dotnetFrameworks: ["4.8"]
+      dotnetSdks: ["8.0"]
+      cppToolsets: []
+      windowsSdks: []
+      features: ["managed-desktop"]
+  - id: native-v143-mfc
+    displayName: "Visual C++ v143 + MFC/ATL"
+    hot: true
+    environment:
+      visualStudio: "2022"
+      dotnetFrameworks: []
+      dotnetSdks: []
+      cppToolsets: ["v143"]
+      windowsSdks: ["10.0.22621.0"]
+      features: ["mfc", "atl"]
+
+estimatedImageBuildMinutes:
+  hot: 0
+  coldAverage: 75
+
+# Phase 2: on-demand factory orchestration enabled (Windows host still external)
+mvpFactoryEnabled: true
+mvpCompatibleWorkers:
+  - ltsc2019
+  - ltsc2022

@@ -1,0 +1,48 @@
+{
+  "requestedHash": "4452d7df84cdb696b6578f7f5285c5ebc0972f23efeeca1b1f5e12c6dc773ed7",
+  "requestedCapability": {
+    "visualStudio": "2022",
+    "dotnetFrameworks": [
+      "4.8"
+    ],
+    "dotnetSdks": [
+      "8.0.412"
+    ],
+    "cppToolsets": [],
+    "windowsSdks": [],
+    "features": [
+      "managed-desktop"
+    ],
+    "windowsBase": "ltsc2022",
+    "customSdks": []
+  },
+  "candidates": [
+    {
+      "profileHash": "4452d7df84cdb696b6578f7f5285c5ebc0972f23efeeca1b1f5e12c6dc773ed7",
+      "imageDigest": "sha256:exact",
+      "capability": {
+        "visualStudio": "2022",
+        "dotnetFrameworks": [
+          "4.8"
+        ],
+        "dotnetSdks": [
+          {
+            "version": "8.0.412"
+          }
+        ],
+        "cppToolsets": [],
+        "windowsSdks": [],
+        "features": [
+          "managed-desktop"
+        ],
+        "windowsBase": "ltsc2022",
+        "customSdks": []
+      },
+      "hot": true
+    }
+  ],
+  "expect": {
+    "matchType": "EXACT",
+    "matchedHash": "4452d7df84cdb696b6578f7f5285c5ebc0972f23efeeca1b1f5e12c6dc773ed7"
+  }
+}

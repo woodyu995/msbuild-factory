@@ -1,0 +1,19 @@
+{
+  "environment": {
+    "visualStudio": "2022",
+    "dotnetFrameworks": [],
+    "dotnetSdks": [],
+    "cppToolsets": [
+      "v143"
+    ],
+    "windowsSdks": [
+      "10.0.22621.0"
+    ],
+    "features": [
+      "mfc",
+      "atl"
+    ]
+  },
+  "expectedProfileHash": "79d64e4717e1e380934c83da9480db103f086d5bb041afc83c620d09a216c096",
+  "expectedCanonical": "{\"agentBase\":{\"digest\":\"sha256:agent-base-ltsc2022-mvp0001\",\"image\":\"registry.internal/build/agent-base-ltsc2022\"},\"cppToolsets\":[\"v143\"],\"customSdks\":[],\"dotnetFrameworkTargetingPacks\":[],\"dotnetSdks\":[],\"features\":[\"atl\",\"mfc\"],\"installScriptVersion\":\"install-scripts-7\",\"schemaVersion\":2,\"templateVersion\":\"image-template-3\",\"validationSuiteVersion\":\"validation-5\",\"visualStudio\":{\"components\":[\"Microsoft.Component.MSBuild\",\"Microsoft.VisualStudio.Component.VC.ATL\",\"Microsoft.VisualStudio.Component.VC.MFC\",\"Microsoft.VisualStudio.Component.VC.Tools.x86.x64\",\"Microsoft.VisualStudio.Component.Windows11SDK.22621\"],\"generation\":\"2022\",\"layoutManifestDigest\":\"sha256:layout-2022-mvp0001\",\"layoutRelease\":\"vs2022-17.14.x\"},\"windowsBase\":{\"digest\":\"sha256:windows-base-ltsc2022-mvp0001\",\"name\":\"ltsc2022\"},\"windowsSdks\":[{\"installerSha256\":\"sha256:winsdk-22621-mvp0001\",\"version\":\"10.0.22621.0\"}]}"
+}

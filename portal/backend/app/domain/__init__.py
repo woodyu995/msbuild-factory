@@ -1,0 +1,1 @@
+"""Domain logic for profiles, hashing, and capability matching."""
