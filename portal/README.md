@@ -1,12 +1,14 @@
-# Portal MVP (Phase 0/1)
+# Portal (Phase 0/1 + Factory orchestration)
 
-Implements the revised design's foundation:
+Implements the revised design foundation and phase-2 factory control plane:
 
 - Component catalog (`catalog/catalog.yaml`)
 - Profile resolver + canonical profile hash
 - Capability Exact / Superset matcher
 - Build request APIs + HMAC internal callbacks
-- Seeded Hot Preset READY images (factory closed)
+- Seeded Hot Preset READY images
+- On-demand Image Factory lock/lease/waiters (Jenkins stub)
+- Dockerfile / `.vsconfig` / install manifest generation
 - Minimal React UI
 
 ## Backend
@@ -32,13 +34,13 @@ npm install
 npm run dev
 ```
 
-          UI proxies `/api` to `http://127.0.0.1:8000`.
+UI proxies `/api` to `http://127.0.0.1:8000`.
 
-          ## MVP / Phase 2 scope notes
+## Scope notes
 
-          - `mvpFactoryEnabled: true` — cold profiles queue `msbuild-image-factory` (Jenkins stub)
-          - Exact waiters share one CREATING lease; READY callback wakes them to project build
-          - Factory artifacts: `GET /internal/v1/images/{hash}/factory-artifacts`
-          - Lease heartbeat + reconcile endpoints for callback loss / TTL expiry
-          - Windows Docker build host is still external (scripts under `image_factory/scripts`)
-          - SSO/RBAC is not wired; send optional `X-Actor`
+- `mvpFactoryEnabled: true` — cold profiles queue `msbuild-image-factory` (Jenkins stub)
+- Exact waiters share one CREATING lease; READY callback wakes them to project build
+- Factory artifacts: `GET /internal/v1/images/{hash}/factory-artifacts`
+- Lease heartbeat + reconcile endpoints for callback loss / TTL expiry
+- Windows Docker build host is still external (scripts under `image_factory/scripts`)
+- SSO/RBAC is not wired; send optional `X-Actor`
