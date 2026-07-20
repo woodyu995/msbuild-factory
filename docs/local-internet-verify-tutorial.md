@@ -10,16 +10,42 @@
 ## 0. 준비물
 
 - Docker Desktop (또는 Docker Engine) + `docker compose`
+- **Linux 컨테이너 모드** (중요 — 아래 참고)
 - 이 저장소 클론본
 - 브라우저
 - (선택) `curl`
 
-권장 OS: Linux / macOS / Windows(WCL2)
+권장 OS: Linux / macOS / Windows + **WSL2 / Linux containers**
 
 ```bash
 git clone <repo-url> msbuild-factory
 cd msbuild-factory
 git checkout cursor/portal-mvp-implementation-03e9   # 작업 브랜치
+```
+
+### 0-1. Windows에서 필수: Linux 컨테이너로 전환
+
+Portal Dockerfile은 `node:22-alpine`, `python:3.12-slim` 등 **Linux 이미지**만 사용합니다.  
+Docker가 Windows 컨테이너 모드면 아래 에러가 납니다.
+
+```text
+no matching manifest for windows(10.0.20348)/amd64 in the manifest list entries
+```
+
+해결:
+
+1. **Docker Desktop** 쓰는 경우  
+   - 트레이 아이콘 우클릭 → **Switch to Linux containers…**  
+   - 전환 후 `docker version` 의 OS/Arch 가 `linux` 인지 확인
+2. **Windows Server + Docker** 만 있고 Linux 컨테이너가 불가한 경우  
+   - WSL2 / Linux VM에서 실행하거나  
+   - 아래 **§5 Docker 없이 호스트 실행** 사용
+3. 확인 명령:
+
+```bash
+docker info --format '{{.OSType}}'
+# 기대값: linux
+# windows 가 나오면 아직 Windows 컨테이너 모드입니다.
 ```
 
 ---
@@ -29,6 +55,7 @@ git checkout cursor/portal-mvp-implementation-03e9   # 작업 브랜치
 저장소 루트에서:
 
 ```bash
+# Linux 컨테이너 모드인지 확인한 뒤
 docker compose -f docker-compose.local.yml up --build
 ```
 
