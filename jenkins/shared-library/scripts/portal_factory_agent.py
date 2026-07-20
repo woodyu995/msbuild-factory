@@ -115,33 +115,108 @@ def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").lower() in {"1", "true", "yes"}
 
 
-def _link_or_copy_dir(src: Path, dst: Path) -> None:
-    """Stage a host directory into the Docker build context (junction/symlink preferred)."""
+def _docker_supports_build_context() -> bool:
+    """True when `docker build` accepts named `--build-context` (BuildKit / recent Docker)."""
+    import subprocess
+
+    help_run = subprocess.run(
+        ["docker", "build", "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    text = f"{help_run.stdout or ''}{help_run.stderr or ''}"
+    return "--build-context" in text
+
+
+def _rm_tree(path: Path) -> None:
+    """Remove a file/dir/junction (Windows junctions need rmdir, not unlink of target)."""
     import shutil
     import subprocess
 
-    if dst.exists():
+    if not path.exists() and not path.is_symlink():
+        # Junction may still report exists() inconsistently; try rmdir anyway on Windows.
+        if os.name == "nt":
+            subprocess.run(
+                ["cmd", "/c", "rmdir", str(path)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
         return
-    if not src.exists():
-        raise SystemExit(f"required path missing: {src}")
-    dst.parent.mkdir(parents=True, exist_ok=True)
     if os.name == "nt":
-        # Directory junction — no full copy of multi‑GB VS layouts.
-        linked = subprocess.run(
-            ["cmd", "/c", "mklink", "/J", str(dst), str(src)],
+        # Prefer rmdir for junctions/symlinks so the target is not deleted.
+        removed = subprocess.run(
+            ["cmd", "/c", "rmdir", str(path)],
             check=False,
             capture_output=True,
             text=True,
         )
-        if linked.returncode != 0:
+        if removed.returncode == 0 or not path.exists():
+            return
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink(missing_ok=True)
+
+
+def _embed_dir_into_context(src: Path, dst: Path) -> None:
+    """Fully copy src into the Docker build context.
+
+    Windows Docker often omits junctions/symlinks from the default build context,
+    so named `--build-context` is preferred when available. Older Docker lacks that
+    flag — fall back to a real robocopy/shutil copy (slow for multi‑GB VS layouts).
+    """
+    import shutil
+    import subprocess
+
+    if not src.exists():
+        raise SystemExit(f"required path missing: {src}")
+    if dst.exists() or dst.is_symlink():
+        _rm_tree(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        # robocopy exit codes 0–7 are success (bit flags); >= 8 is failure.
+        copied = subprocess.run(
+            [
+                "robocopy",
+                str(src),
+                str(dst),
+                "/E",
+                "/NFL",
+                "/NDL",
+                "/NJH",
+                "/NJS",
+                "/nc",
+                "/ns",
+                "/np",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if copied.returncode >= 8:
             raise SystemExit(
-                f"mklink /J failed ({dst} -> {src}): {linked.stderr or linked.stdout}"
+                f"robocopy failed ({src} -> {dst}, code={copied.returncode}): "
+                f"{copied.stderr or copied.stdout}"
             )
         return
-    try:
-        dst.symlink_to(src, target_is_directory=True)
-    except OSError:
-        shutil.copytree(src, dst)
+    shutil.copytree(src, dst)
+
+
+def _rewrite_dockerfile_copy_mode(df_text: str, *, use_build_context: bool) -> str:
+    """Switch between named-context COPY and in-context COPY layout/installers."""
+    if use_build_context:
+        out = df_text
+        out = out.replace("COPY layout C:\\Layout", "COPY --from=layout . C:\\Layout")
+        out = out.replace("COPY installers C:\\Installers", "COPY --from=installers . C:\\Installers")
+        if "COPY --from=layout" in out and not out.lstrip().startswith("# syntax="):
+            out = "# syntax=docker/dockerfile:1.4\n" + out
+        return out
+    out = df_text
+    out = out.replace("COPY --from=layout . C:\\Layout", "COPY layout C:\\Layout")
+    out = out.replace("COPY --from=installers . C:\\Installers", "COPY installers C:\\Installers")
+    return out
 
 
 def _resolve_layout_dir(layout_root: str, layout_release: str) -> Path:
@@ -216,25 +291,41 @@ def cmd_build(args: argparse.Namespace) -> None:
         installer_src.mkdir(parents=True, exist_ok=True)
         (installer_src / ".keep").write_text("", encoding="utf-8")
 
-    # Prefer Docker named build-contexts (reliable on Windows). Junctions in the
-    # default context are often invisible to `docker build` on Windows containers.
-    use_build_context = not _env_flag("FACTORY_EMBED_LAYOUT_IN_CONTEXT")
+    # Prefer Docker named build-contexts when the daemon supports them. Older
+    # Windows Docker rejects `--build-context`; then fully embed layout/installers
+    # into the work dir (junctions are invisible to Windows docker build).
+    force_embed = _env_flag("FACTORY_EMBED_LAYOUT_IN_CONTEXT")
+    supports_build_context = _docker_supports_build_context()
+    use_build_context = supports_build_context and not force_embed
     if not use_build_context:
-        _link_or_copy_dir(layout_src, work / "layout")
-        _link_or_copy_dir(installer_src, work / "installers")
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "phase": "embed-layout",
+                    "reason": (
+                        "FACTORY_EMBED_LAYOUT_IN_CONTEXT"
+                        if force_embed
+                        else "docker-build lacks --build-context"
+                    ),
+                    "layoutSrc": str(layout_src),
+                    "installerSrc": str(installer_src),
+                    "note": "Full copy into work dir — may take a long time for VS layouts",
+                }
+            )
+        )
+        _embed_dir_into_context(layout_src, work / "layout")
+        _embed_dir_into_context(installer_src, work / "installers")
 
     staging_tag = f'{arts["stagingRepository"]}:{arts["imageTag"]}'
     final_tag = f'{arts["finalRepository"]}:{arts["imageTag"]}'
     dockerfile = work / "Dockerfile"
 
-    # Ensure Dockerfile uses --from=layout when using build-context (fetch may be old).
-    df_text = dockerfile.read_text(encoding="utf-8")
-    if use_build_context and "COPY --from=layout" not in df_text:
-        df_text = df_text.replace("COPY layout C:\\Layout", "COPY --from=layout . C:\\Layout")
-        df_text = df_text.replace("COPY installers C:\\Installers", "COPY --from=installers . C:\\Installers")
-        if not df_text.lstrip().startswith("# syntax="):
-            df_text = "# syntax=docker/dockerfile:1.4\n" + df_text
-        dockerfile.write_text(df_text, encoding="utf-8")
+    df_text = _rewrite_dockerfile_copy_mode(
+        dockerfile.read_text(encoding="utf-8"),
+        use_build_context=use_build_context,
+    )
+    dockerfile.write_text(df_text, encoding="utf-8")
 
     build_cmd = [
         "docker",
@@ -265,6 +356,7 @@ def cmd_build(args: argparse.Namespace) -> None:
                 "phase": "docker-build",
                 "cmd": build_cmd,
                 "layoutSrc": str(layout_src),
+                "supportsBuildContext": supports_build_context,
                 "useBuildContext": use_build_context,
             }
         )

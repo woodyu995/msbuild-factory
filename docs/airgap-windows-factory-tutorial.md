@@ -511,9 +511,12 @@ docker run --rm msbuild-local/profile:<tag> cmd /c where msbuild
 | Windows→Portal 연결 실패 | 네트워크 | 방화벽, IP, `:8000` |
 | Ensure 후 바로 READY + tar 없음 | Linux | stub compose 쓰는지 확인 → **airgap-windows** 로 교체 |
 | CREATING 고정 | Windows | fetch/build/finalize 실행 여부 |
+| `unknown flag: --build-context` | Windows | Docker가 구버전. **최신 `portal_factory_agent.py`** 로 교체 후 build 재실행 — 자동으로 layout을 work 디렉터리에 robocopy (수십 GB·시간 소요). 강제: `$env:FACTORY_EMBED_LAYOUT_IN_CONTEXT=1` |
+| `result.json missing` | Windows | build가 실패한 것. build 성공 후에만 finalize |
+| `COPY failed: layout` / junction | Windows | 위와 동일 — embed 경로 사용 (에이전트 자동) |
 | `FROM` 실패 | Windows | `docker images msbuild-agent-base` |
 | vs_setup 없음 | Windows | `IMAGE_FACTORY_LAYOUT_ROOT` |
-| HMAC 401 | 양쪽 | 시크릿 문자열 동일 여부 |
+| HMAC 401 | 양쪽 | 시크릿 문자열 동일 여부 · 시계 동기화 |
 | Linux에서 Windows 이미지 없음 | 정상 | 이미지는 **Windows Docker에만** 있음 |
 
 중지 (Linux):
