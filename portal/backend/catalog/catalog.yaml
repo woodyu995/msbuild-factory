@@ -37,7 +37,8 @@ visualStudio:
       msbuild: Microsoft.Component.MSBuild
       managed-desktop: Microsoft.VisualStudio.Workload.ManagedDesktopBuildTools
       cpp-v142: Microsoft.VisualStudio.Component.VC.Tools.x86.x64
-      mfc: Microsoft.VisualStudio.Component.VC.MFC
+      # Build Tools SKU uses ATLMFC (VC.MFC is IDE-only and fails --layout)
+      mfc: Microsoft.VisualStudio.Component.VC.ATLMFC
       atl: Microsoft.VisualStudio.Component.VC.ATL
       windows-sdk-19041: Microsoft.VisualStudio.Component.Windows10SDK.19041
 
@@ -56,7 +57,7 @@ visualStudio:
       managed-desktop: Microsoft.VisualStudio.Workload.ManagedDesktopBuildTools
       cpp-v142: Microsoft.VisualStudio.Component.VC.Tools.x86.x64
       cpp-v143: Microsoft.VisualStudio.Component.VC.Tools.x86.x64
-      mfc: Microsoft.VisualStudio.Component.VC.MFC
+      mfc: Microsoft.VisualStudio.Component.VC.ATLMFC
       atl: Microsoft.VisualStudio.Component.VC.ATL
       cpp-cli: Microsoft.VisualStudio.Component.VC.CLI.Support
       windows-sdk-19041: Microsoft.VisualStudio.Component.Windows10SDK.19041

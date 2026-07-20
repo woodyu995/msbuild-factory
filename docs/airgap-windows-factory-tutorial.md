@@ -207,13 +207,18 @@ Catalog `layoutRelease`와 **폴더 이름을 동일**하게 만든다.
 
 부트스트랩퍼(`vs_BuildTools.exe`)는 **연도별로 따로** 받는다. layout 폴더 안에 `vs_setup.exe` 또는 `vs_BuildTools.exe`가 있어야 한다.
 
+> **주의 (MFC ID):** Build Tools 부트스트랩퍼는  
+> `Microsoft.VisualStudio.Component.VC.MFC` 를 **인식하지 않는다** (IDE 전용 ID).  
+> MFC는 반드시 **`Microsoft.VisualStudio.Component.VC.ATLMFC`** 를 쓴다.  
+> ATL은 `Microsoft.VisualStudio.Component.VC.ATL`.
+
 #### A-5a. VS 2022 layout
 
 ```powershell
 mkdir D:\airgap-export\vs2022-17.14.x -Force
 cd D:\airgap-export
 
-# 2022 부트스트랩퍼로 실행 (파일명은 다운로드명에 맞게)
+# 2022 Build Tools 부트스트랩퍼 (파일명은 다운로드명에 맞게)
 .\vs_BuildTools_2022.exe `
   --layout D:\airgap-export\vs2022-17.14.x `
   --lang en-US `
@@ -221,7 +226,7 @@ cd D:\airgap-export
   --add Microsoft.VisualStudio.Workload.ManagedDesktopBuildTools `
   --add Microsoft.VisualStudio.Workload.VCTools `
   --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-  --add Microsoft.VisualStudio.Component.VC.MFC `
+  --add Microsoft.VisualStudio.Component.VC.ATLMFC `
   --add Microsoft.VisualStudio.Component.VC.ATL `
   --add Microsoft.VisualStudio.Component.Windows11SDK.22621 `
   --includeRecommended
@@ -233,7 +238,7 @@ cd D:\airgap-export
 mkdir D:\airgap-export\vs2019-16.11.54 -Force
 cd D:\airgap-export
 
-# 2019 부트스트랩퍼로 실행
+# 2019 Build Tools 부트스트랩퍼
 .\vs_BuildTools_2019.exe `
   --layout D:\airgap-export\vs2019-16.11.54 `
   --lang en-US `
@@ -241,7 +246,7 @@ cd D:\airgap-export
   --add Microsoft.VisualStudio.Workload.ManagedDesktopBuildTools `
   --add Microsoft.VisualStudio.Workload.VCTools `
   --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-  --add Microsoft.VisualStudio.Component.VC.MFC `
+  --add Microsoft.VisualStudio.Component.VC.ATLMFC `
   --add Microsoft.VisualStudio.Component.VC.ATL `
   --add Microsoft.VisualStudio.Component.Windows10SDK.19041 `
   --includeRecommended
@@ -288,16 +293,18 @@ USB 루트를 이렇게 맞추면 폐쇄망에서 헤매지 않는다.
 
 ```text
 USB:\
-  00-README.txt                 # 브랜치명, 날짜, linux-ip 메모용
+  00-README.txt
   linux\
     msbuild-portal.tar
     msbuild-factory-src.tgz
   windows\
-    servercore-ltsc2022.tar
-    msbuild-factory-src.tgz     # Linux와 동일한 소스 (agent용)
+    servercore-ltsc2019.tar          # VS 2019용
+    servercore-ltsc2022.tar          # VS 2022용
+    msbuild-factory-src.tgz          # Linux와 동일 (agent용)
     vs-layouts\
-      vs2022-17.14.x\           # vs_setup.exe 포함
-    installers\                 # 비어 있어도 OK (폴더는 유지)
+      vs2019-16.11.54\               # VS 2019 layout (vs_setup.exe)
+      vs2022-17.14.x\                # VS 2022 layout (vs_setup.exe)
+    installers\                      # 비어 있어도 OK
 ```
 
 `00-README.txt` 예:
@@ -305,27 +312,28 @@ USB:\
 ```text
 branch: cursor/portal-mvp-implementation-03e9
 portal tag: msbuild-portal:airgap
-hmac (폐쇄망 compose 기본): airgap-dev-hmac-change-me
-base: servercore ltsc2022 → retag msbuild-agent-base:ltsc2022
-layout: vs2022-17.14.x
+hmac: airgap-dev-hmac-change-me
+2019: servercore-ltsc2019 → msbuild-agent-base:ltsc2019 / layout vs2019-16.11.54
+2022: servercore-ltsc2022 → msbuild-agent-base:ltsc2022 / layout vs2022-17.14.x
 ```
 
 ### USB에 넣을 목록 (요약)
 
 | 파일/폴더 | 용량 감 | 폐쇄망에서 푸는 곳 |
 |-----------|---------|-------------------|
-| `msbuild-portal.tar` | 중 | **Linux** `docker load` |
+| `msbuild-portal.tar` | 중 | **Linux** |
 | `msbuild-factory-src.tgz` | 소 | **Linux + Windows** |
-| `servercore-ltsc2022.tar` | 중 | **Windows** `docker load` |
-| `vs2022-17.14.x\` layout | **대** | **Windows** 디스크 |
+| `servercore-ltsc2019.tar` | 중 | **Windows** |
+| `servercore-ltsc2022.tar` | 중 | **Windows** |
+| `vs2019-16.11.54\` | **대** | **Windows** |
+| `vs2022-17.14.x\` | **대** | **Windows** |
 | `installers\` | 소~중 | **Windows** |
 
-복사 후 USB에서 `Get-FileHash` / `ls -lh`로 깨짐 여부를 한 번 확인하는 것을 권장한다.
+2022만 먼저 검증해도 되며. 다만 Portal에서 VS **2019**를 고르면 2019 base+layout이 필수다.
+
+복사 후 USB에서 용량/`Get-FileHash`로 깨짐 여부를 한 번 확인하는 것을 권장한다.
 
 ---
-
-## B. 폐쇄망 Linux 호스트 — Portal
-
 
 ## B. 폐쇄망 Linux 호스트 — Portal
 
@@ -358,34 +366,47 @@ curl http://10.0.0.10:8000/readyz
 
 1. Docker가 **Windows containers** 모드인지 확인  
 2. 소스 압축 해제 (agent 스크립트용)  
-3. base load + Catalog가 기대하는 이름으로 tag  
-4. layout / installers 경로 준비  
+3. **2019 / 2022 base** load + Catalog tag  
+4. **연도별 layout** / installers 경로 준비  
 5. Python 3 설치
 
 ```powershell
+# --- bases ---
+docker load -i servercore-ltsc2019.tar
 docker load -i servercore-ltsc2022.tar
+docker tag mcr.microsoft.com/windows/servercore:ltsc2019 msbuild-agent-base:ltsc2019
 docker tag mcr.microsoft.com/windows/servercore:ltsc2022 msbuild-agent-base:ltsc2022
 docker images msbuild-agent-base
 
-# 레이아웃 예 (vs_setup.exe 가 이 폴더 안에 있어야 함)
+# --- layouts (USB에서 복사한 경로 예) ---
+# D:\vs-layouts\vs2019-16.11.54\vs_setup.exe
 # D:\vs-layouts\vs2022-17.14.x\vs_setup.exe
-# D:\installers\   (비어 있어도 폴더는 필요)
+# D:\installers\
 
 tar xzf msbuild-factory-src.tgz -C C:\
 cd C:\msbuild-factory   # 실제 푼 경로에 맞게
 ```
 
-환경 변수 (세션마다):
+공통 환경 변수:
 
 ```powershell
-$env:PORTAL_URL = "http://10.0.0.10:8000"          # Linux Portal
+$env:PORTAL_URL = "http://10.0.0.10:8000"
 $env:PORTAL_HMAC_SECRET = "airgap-dev-hmac-change-me"
-$env:IMAGE_FACTORY_LAYOUT_ROOT = "D:\vs-layouts\vs2022-17.14.x"
 $env:IMAGE_FACTORY_INSTALLER_ROOT = "D:\installers"
 $env:FACTORY_DRY_RUN = "0"
-$env:FACTORY_SKIP_PUSH = "1"                       # Nexus 아직 안 씀
+$env:FACTORY_SKIP_PUSH = "1"
 $env:FACTORY_DOCKER_SAVE_DIR = "D:\factory-images"
 $env:IMAGE_FACTORY_STRICT = "1"
+```
+
+빌드할 VS에 따라 layout 루트만 바꾼다:
+
+```powershell
+# VS 2022 빌드 전
+$env:IMAGE_FACTORY_LAYOUT_ROOT = "D:\vs-layouts\vs2022-17.14.x"
+
+# VS 2019 빌드 전
+$env:IMAGE_FACTORY_LAYOUT_ROOT = "D:\vs-layouts\vs2019-16.11.54"
 ```
 
 ---
@@ -396,9 +417,14 @@ $env:IMAGE_FACTORY_STRICT = "1"
 
 1. `http://<linux-ip>:8000/` 접속  
 2. Reuse mode = **exactReuse**  
-3. Cold 조합 예: VS 2022 + net48 + C++ v143 + WinSDK + MFC  
+3. Cold 조합 예:
+   - **2022**: VS 2022 + net48 + C++ **v143** + WinSDK 22621 + MFC  
+   - **2019**: VS 2019 + net48 + C++ **v142** + WinSDK **19041** + MFC  
 4. **Ensure image**  
 5. 상태가 **CREATING**인지 확인 (여기서 멈추는 것이 정상 — Windows가 빌드해야 함)
+
+> Portal에서 고른 VS 연도와 Windows의 base tag / layout 루트가 **같아야** 한다.  
+> 2019 Ensure인데 `ltsc2022` / `vs2022-…` layout만 있으면 빌드가 실패한다.
 
 UI에 나온 `profile` / hash와, 필요하면 Linux에서 lease 확인:
 
@@ -455,9 +481,9 @@ docker run --rm msbuild-local/profile:<tag> cmd /c where msbuild
 ## E. 성공 체크리스트
 
 - [ ] Linux: Portal `/readyz` OK, Windows에서 URL 접속 가능  
-- [ ] Windows: `msbuild-agent-base:ltsc2022` 존재  
-- [ ] Windows: layout에 `vs_setup.exe` 존재  
-- [ ] Ensure → CREATING  
+- [ ] Windows: `msbuild-agent-base:ltsc2019` 및/또는 `:ltsc2022`  
+- [ ] Windows: `vs2019-16.11.54` / `vs2022-17.14.x` 각각에 setup exe  
+- [ ] Ensure(연도 일치) → CREATING  
 - [ ] Windows build 성공 → 로컬 `msbuild-local/profile:…`  
 - [ ] finalize → Portal READY  
 - [ ] 컨테이너에서 `msbuild` 확인  

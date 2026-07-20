@@ -7,7 +7,8 @@ from typing import Any
 COMPONENT_ID_BY_KEY = {
     "msbuild": "Microsoft.Component.MSBuild",
     "managed-desktop": "Microsoft.VisualStudio.Workload.ManagedDesktopBuildTools",
-    "mfc": "Microsoft.VisualStudio.Component.VC.MFC",
+    # Build Tools layout/install: use ATLMFC (VC.MFC is not recognized by vs_BuildTools)
+    "mfc": "Microsoft.VisualStudio.Component.VC.ATLMFC",
     "atl": "Microsoft.VisualStudio.Component.VC.ATL",
     "cpp-cli": "Microsoft.VisualStudio.Component.VC.CLI.Support",
     "cpp-v142": "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
