@@ -5,8 +5,9 @@
 
 | 환경 | 문서 |
 |------|------|
-| **폐쇄망** (USB 반입 후 빌드까지) | **[airgap-local-verify-tutorial.md](./airgap-local-verify-tutorial.md)** ← 지금 단계 |
-| 인터넷망에서 바로 확인 | 아래 짧은 절차 |
+| **폐쇄망 + 실제 Server Core / VS Build Tools** | **[airgap-windows-factory-tutorial.md](./airgap-windows-factory-tutorial.md)** ← 목표 경로 |
+| 폐쇄망 + 검증용 stub만 (`FROM scratch`) | [airgap-local-verify-tutorial.md](./airgap-local-verify-tutorial.md) |
+| 인터넷망에서 stub 바로 확인 | 아래 짧은 절차 |
 
 ```text
 브라우저 → Portal → Ensure → 로컬 docker build + docker save → READY

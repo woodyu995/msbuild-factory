@@ -29,9 +29,22 @@ def generate_vsconfig(build_input: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _base_image_ref(agent: dict[str, Any], *, windows_base_name: str) -> str:
+    """Prefer digest pins in prod; MVP placeholder digests use local tag refs."""
+    image = agent["image"]
+    digest = str(agent.get("digest") or "")
+    tag = str(agent.get("tag") or windows_base_name or "latest")
+    if "mvp" in digest.lower() or digest.endswith("mvp0001"):
+        return f"{image}:{tag}"
+    if digest.startswith("sha256:"):
+        return f"{image}@{digest}"
+    return f"{image}:{tag}"
+
+
 def generate_dockerfile(build_input: dict[str, Any], *, profile_hash: str) -> str:
     agent = build_input["agentBase"]
-    base_ref = f'{agent["image"]}@{agent["digest"]}'
+    windows_base_name = str((build_input.get("windowsBase") or {}).get("name") or "latest")
+    base_ref = _base_image_ref(agent, windows_base_name=windows_base_name)
     layout = build_input["visualStudio"]["layoutRelease"]
     template = build_input.get("templateVersion", "image-template-3")
     hash12 = profile_hash[:12]
@@ -48,8 +61,15 @@ def generate_dockerfile(build_input: dict[str, Any], *, profile_hash: str) -> st
         "",
         'SHELL ["cmd", "/S", "/C"]',
         "",
+        "COPY install-manifest.json C:\\ImageBuild\\install-manifest.json",
         "COPY profile.vsconfig C:\\ImageBuild\\profile.vsconfig",
         "COPY scripts C:\\ImageBuild\\scripts",
+        # Offline layout + installers are staged into the build context by the factory agent.
+        "COPY layout C:\\Layout",
+        "COPY installers C:\\Installers",
+        "",
+        "ENV IMAGE_FACTORY_LAYOUT_ROOT=C:\\Layout",
+        "ENV IMAGE_FACTORY_INSTALLER_ROOT=C:\\Installers",
         "",
         "RUN C:\\ImageBuild\\scripts\\Install-BuildEnvironment.cmd",
         "",

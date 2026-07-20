@@ -1,11 +1,15 @@
 catalogVersion: "2026.07"
 
 agentBases:
+  # tag: used when digest is an MVP placeholder (air-gap local load/retag).
+  # Prod should pin real registry digests (image@sha256:...).
   ltsc2019:
-    image: registry.internal/build/agent-base-ltsc2019
+    image: msbuild-agent-base
+    tag: ltsc2019
     digest: "sha256:agent-base-ltsc2019-mvp0001"
   ltsc2022:
-    image: registry.internal/build/agent-base-ltsc2022
+    image: msbuild-agent-base
+    tag: ltsc2022
     digest: "sha256:agent-base-ltsc2022-mvp0001"
 
 baseImages:

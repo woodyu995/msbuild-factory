@@ -17,8 +17,8 @@
 필요: **Linux Docker가 돌아가는 폐쇄망 호스트** 1대 (K8s/Jenkins/Nexus 불필요).
 
 > 이 단계 이미지는 검증용 stub (`FROM scratch` + 프로필 메타데이터)입니다.  
-> 네트워크 pull이 없어서 폐쇄망에서도 빌드됩니다.  
-> 실제 Windows MSBuild + Nexus push는 이후 단계입니다.
+> **실제 Server Core + VS Build Tools** 는  
+> **[airgap-windows-factory-tutorial.md](./airgap-windows-factory-tutorial.md)** 를 사용하세요.
 
 ---
 

@@ -15,10 +15,11 @@ Implements the revised design control plane and a local end-to-end simulation pa
 - Optional real Jenkins HTTP trigger (`PORTAL_JENKINS_*`)
 - Minimal React UI
 
-## Local / air-gap step verify (no login / Jenkins / Nexus)
+## Local / air-gap verify
 
-- **폐쇄망 (이미지 빌드까지):** **[docs/airgap-local-verify-tutorial.md](../docs/airgap-local-verify-tutorial.md)**
-- 인터넷망 바로 확인: **[docs/local-verify-tutorial.md](../docs/local-verify-tutorial.md)**
+- **실제 Server Core + VS Build Tools (폐쇄망):** **[docs/airgap-windows-factory-tutorial.md](../docs/airgap-windows-factory-tutorial.md)**
+- stub만 (`FROM scratch`): **[docs/airgap-local-verify-tutorial.md](../docs/airgap-local-verify-tutorial.md)**
+- 개요: **[docs/local-verify-tutorial.md](../docs/local-verify-tutorial.md)**
 
 ```bash
 # internet: build + USB
