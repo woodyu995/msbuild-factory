@@ -151,7 +151,9 @@ def ensure_image(
             factory_phase="READY",
         )
 
-    wait = int(catalog.estimated_minutes.get("coldAverage", 75))
+    from app.config import get_settings
+
+    wait = 1 if get_settings().local_factory else int(catalog.estimated_minutes.get("coldAverage", 75))
     return EnsureImageResult(
         requested_profile_hash=resolved.profile_hash,
         matched_profile_hash=image.profile_hash,
@@ -169,10 +171,33 @@ def ensure_image(
 
 
 def get_image_status(session: Session, profile_hash: str) -> dict[str, Any]:
+    import json
+
+    from app.config import get_settings
+    from app.services.local_factory import local_artifact_paths
+
     row = get_active_image(session, profile_hash)
     if row is None:
         raise LookupError("image not found")
     ready = row.status in {"READY", "DEPRECATED"} and _digest_usable(row.image_digest)
+    local_image_ref = None
+    local_tar_path = None
+    local_tar_file = None
+    settings = get_settings()
+    if settings.local_factory and row.image_tag:
+        arts = local_artifact_paths(settings, row.image_tag)
+        local_image_ref = arts["localImageRef"]
+        local_tar_path = arts["localTarPath"]
+        local_tar_file = arts["localTarFile"]
+    elif row.validation_result_json:
+        try:
+            meta = json.loads(row.validation_result_json)
+            if isinstance(meta, dict) and meta.get("mode") == "local-factory":
+                local_image_ref = meta.get("localImageRef")
+                local_tar_path = meta.get("localTarPath")
+                local_tar_file = meta.get("localTarFile")
+        except json.JSONDecodeError:
+            pass
     return {
         "profileHash": row.profile_hash,
         "imageStatus": row.status,
@@ -181,4 +206,7 @@ def get_image_status(session: Session, profile_hash: str) -> dict[str, Any]:
         "windowsBase": row.windows_base,
         "factoryLeaseId": row.lease_id,
         "leaseExpiresAt": row.lease_expires_at.isoformat() if row.lease_expires_at else None,
+        "localImageRef": local_image_ref,
+        "localTarPath": local_tar_path,
+        "localTarFile": local_tar_file,
     }

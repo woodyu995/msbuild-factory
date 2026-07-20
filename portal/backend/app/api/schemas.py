@@ -86,6 +86,9 @@ class EnsureImageResponse(BaseModel):
     errorCode: str | None = None
     errorMessage: str | None = None
     ready: bool = False
+    localImageRef: str | None = None
+    localTarPath: str | None = None
+    localTarFile: str | None = None
 
 
 class ImageStatusResponse(BaseModel):
@@ -96,6 +99,9 @@ class ImageStatusResponse(BaseModel):
     windowsBase: str | None = None
     factoryLeaseId: str | None = None
     leaseExpiresAt: str | None = None
+    localImageRef: str | None = None
+    localTarPath: str | None = None
+    localTarFile: str | None = None
 
 
 class BuildRequestResponse(BaseModel):

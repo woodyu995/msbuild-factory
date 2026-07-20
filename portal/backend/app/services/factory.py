@@ -130,6 +130,9 @@ def start_or_join_factory(
     if count_creating(session) >= MAX_GLOBAL_CREATING:
         raise FactoryBusy("factory slots full")
 
+    from app.config import get_settings
+
+    settings = get_settings()
     lease_id = f"factory-{uuid.uuid4().hex[:10]}"
     if existing and existing.status in {"FAILED", "DEPRECATED"}:
         existing.status = "CREATING"
@@ -148,9 +151,10 @@ def start_or_join_factory(
         image = existing
     else:
         tag = f"vs{resolved.vs_generation}-{resolved.profile_hash[:12]}"
+        repo = settings.local_image_repo if settings.local_factory else _registry().final_image
         image = BuildImage(
             profile_hash=resolved.profile_hash,
-            image_repository=_registry().final_image,
+            image_repository=repo,
             image_tag=tag,
             image_digest=f"sha256:pending-{resolved.profile_hash[:16]}",
             status="CREATING",
@@ -188,16 +192,19 @@ def start_or_join_factory(
                 return raced, "READY"
             raise
 
-    jenkins = get_jenkins_client()
-    trigger = jenkins.trigger_job(
-        FACTORY_JOB,
-        {
-            "BUILD_REQUEST_ID": request_id or "",
-            "PROFILE_HASH": resolved.profile_hash,
-            "FACTORY_LEASE_ID": image.lease_id,
-        },
-    )
-    image.factory_job_id = trigger.queue_id
+    if settings.local_factory:
+        image.factory_job_id = "local-factory"
+    else:
+        jenkins = get_jenkins_client()
+        trigger = jenkins.trigger_job(
+            FACTORY_JOB,
+            {
+                "BUILD_REQUEST_ID": request_id or "",
+                "PROFILE_HASH": resolved.profile_hash,
+                "FACTORY_LEASE_ID": image.lease_id,
+            },
+        )
+        image.factory_job_id = trigger.queue_id
     image.updated_at = utcnow()
     session.flush()
     return image, "CREATING"

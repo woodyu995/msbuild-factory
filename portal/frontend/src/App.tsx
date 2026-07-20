@@ -31,6 +31,7 @@ type Options = {
   }>;
   mvpFactoryEnabled: boolean;
   simulateWorkers?: boolean;
+  localFactory?: boolean;
   requireAuth?: boolean;
 };
 
@@ -47,16 +48,9 @@ type EnsureResult = {
   errorMessage?: string;
   image?: { repository: string; tag: string; digest: string };
   factoryLeaseId?: string;
-};
-
-type BuildRequest = {
-  id: string;
-  status: string;
-  matchType: string;
-  requestedProfileHash: string;
-  matchedProfileHash?: string;
-  imageDigest?: string;
-  errorMessage?: string;
+  localImageRef?: string;
+  localTarPath?: string;
+  localTarFile?: string;
 };
 
 const emptyEnv: Environment = {
@@ -108,29 +102,25 @@ function detailMessage(data: unknown): string {
 export default function App() {
   const [options, setOptions] = useState<Options | null>(null);
   const [env, setEnv] = useState<Environment>(emptyEnv);
-  const [project, setProject] = useState({
-    repository: "ProductClient",
-    gitRef: "release/2.1",
-    solutionPath: "ProductClient.sln",
-    configuration: "Release",
-    platform: "x64",
-  });
   const [apiToken, setApiToken] = useState(loadToken);
   const [ensureResult, setEnsureResult] = useState<EnsureResult | null>(null);
-  const [buildResult, setBuildResult] = useState<BuildRequest | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  const localMode = Boolean(options?.localFactory);
+  const showAuth = Boolean(options?.requireAuth);
 
   function updateEnv(next: Environment) {
     setEnv(next);
     setEnsureResult(null);
-    setBuildResult(null);
     setError(null);
   }
 
   useEffect(() => {
-    localStorage.setItem(TOKEN_KEY, apiToken);
-  }, [apiToken]);
+    if (showAuth) {
+      localStorage.setItem(TOKEN_KEY, apiToken);
+    }
+  }, [apiToken, showAuth]);
 
   useEffect(() => {
     fetch("/api/v1/build-environment/options", {
@@ -144,7 +134,6 @@ export default function App() {
       .catch((err) => setError(String(err)));
   }, [apiToken]);
 
-  // Poll image until READY after ensure (only when a factory row exists)
   useEffect(() => {
     const hash = ensureResult?.matchedProfileHash;
     if (!hash || ensureResult?.ready) return;
@@ -169,6 +158,9 @@ export default function App() {
                   image: data.image,
                   factoryLeaseId: data.factoryLeaseId,
                   matchedProfileHash: data.profileHash,
+                  localImageRef: data.localImageRef,
+                  localTarPath: data.localTarPath,
+                  localTarFile: data.localTarFile,
                   action: data.ready ? "REUSE_EXACT" : prev.action,
                 }
               : prev,
@@ -184,28 +176,6 @@ export default function App() {
     apiToken,
   ]);
 
-  useEffect(() => {
-    if (!buildResult?.id) return;
-    const terminal = new Set([
-      "SUCCEEDED",
-      "PROFILE_REJECTED",
-      "PROJECT_BUILD_FAILED",
-      "TEST_FAILED",
-      "CANCELLED",
-      "IMAGE_BUILD_FAILED",
-    ]);
-    if (terminal.has(buildResult.status)) return;
-    const timer = window.setInterval(() => {
-      fetch(`/api/v1/build-requests/${buildResult.id}`, {
-        headers: apiHeaders({}, apiToken),
-      })
-        .then((r) => r.json())
-        .then((data) => setBuildResult(data))
-        .catch(() => undefined);
-    }, 1500);
-    return () => window.clearInterval(timer);
-  }, [buildResult?.id, buildResult?.status, apiToken]);
-
   const vs = useMemo(
     () => options?.visualStudios.find((item) => item.id === env.visualStudio),
     [options, env.visualStudio],
@@ -214,7 +184,6 @@ export default function App() {
   async function onEnsure() {
     setBusy(true);
     setError(null);
-    setBuildResult(null);
     try {
       const resp = await fetch("/api/v1/images/ensure", {
         method: "POST",
@@ -240,134 +209,33 @@ export default function App() {
     }
   }
 
-  async function onSimulateFactory() {
-    const hash = ensureResult?.matchedProfileHash || ensureResult?.requestedProfileHash;
-    if (!hash) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const resp = await fetch(`/api/v1/images/${hash}/simulate`, {
-        method: "POST",
-        headers: apiHeaders({}, apiToken),
-      });
-      const data = await resp.json();
-      if (!resp.ok) {
-        setError(detailMessage(data));
-        return;
-      }
-      const status = await fetch(`/api/v1/images/${hash}`, {
-        headers: apiHeaders({}, apiToken),
-      });
-      const image = await status.json();
-      setEnsureResult((prev) =>
-        prev
-          ? {
-              ...prev,
-              imageStatus: image.imageStatus,
-              ready: image.ready,
-              image: image.image,
-              matchedProfileHash: image.profileHash,
-              action: image.ready ? "REUSE_EXACT" : prev.action,
-            }
-          : prev,
-      );
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onStartBuild() {
-    setBusy(true);
-    setError(null);
-    try {
-      const resp = await fetch("/api/v1/build-requests", {
-        method: "POST",
-        headers: apiHeaders(
-          {
-            "Content-Type": "application/json",
-            "Idempotency-Key": crypto.randomUUID(),
-          },
-          apiToken,
-        ),
-        body: JSON.stringify({
-          project,
-          environment: env,
-          nuget: { mode: "repo-packages-and-internal-feed" },
-          matchedProfileHash: ensureResult?.matchedProfileHash,
-          imageDigest: ensureResult?.image?.digest,
-        }),
-      });
-      const data = await resp.json();
-      if (!resp.ok) {
-        setError(detailMessage(data));
-        return;
-      }
-      setBuildResult(data);
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onSimulateBuild() {
-    if (!buildResult?.id) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const resp = await fetch(`/api/v1/build-requests/${buildResult.id}/simulate`, {
-        method: "POST",
-        headers: apiHeaders({}, apiToken),
-      });
-      const data = await resp.json();
-      if (!resp.ok) {
-        setError(detailMessage(data));
-        return;
-      }
-      const refreshed = await fetch(`/api/v1/build-requests/${buildResult.id}`, {
-        headers: apiHeaders({}, apiToken),
-      });
-      setBuildResult(await refreshed.json());
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const imageReady = Boolean(ensureResult?.ready && ensureResult?.image);
-
   return (
     <div className="app">
       <header className="brand">
         <h1>MSBuild Build Portal</h1>
         <p>
-          1) 빌드 환경으로 이미지를 ensure → 2) READY 후 프로젝트 빌드 시작. Factory가
-          필요하면 Nexus에 푸시될 때까지 polling합니다.
-          {options?.simulateWorkers ? " (auto-simulate ON)" : ""}
-          {options?.requireAuth ? " · auth required" : ""}
+          {localMode
+            ? "환경을 고르고 Ensure image를 누르면 로컬에 이미지가 빌드·저장됩니다. (로그인/Nexus/Jenkins 없음)"
+            : "환경을 고른 뒤 Ensure image로 READY 이미지 digest를 확보합니다."}
+          {options?.simulateWorkers ? " · simulate ON" : ""}
         </p>
       </header>
 
       <div className="grid">
         <section className="panel">
           <h2>빌드 환경</h2>
-          <div className="field">
-            <label>API token (Bearer)</label>
-            <input
-              type="password"
-              value={apiToken}
-              placeholder="optional unless PORTAL_REQUIRE_AUTH"
-              onChange={(e) => setApiToken(e.target.value)}
-              autoComplete="off"
-            />
-            <p className="hint">
-              Simulate는 operator/admin 역할 토큰이 필요합니다. 값은 localStorage에만
-              보관됩니다.
-            </p>
-          </div>
+          {showAuth && (
+            <div className="field">
+              <label>API token (Bearer)</label>
+              <input
+                type="password"
+                value={apiToken}
+                placeholder="required"
+                onChange={(e) => setApiToken(e.target.value)}
+                autoComplete="off"
+              />
+            </div>
+          )}
           {options && (
             <div className="presets">
               {options.presets.map((preset) => (
@@ -454,71 +322,17 @@ export default function App() {
             </select>
           </div>
 
-          <h2>프로젝트</h2>
-          {(
-            [
-              ["repository", "Repository"],
-              ["gitRef", "Git ref"],
-              ["solutionPath", "Solution path"],
-              ["configuration", "Configuration"],
-              ["platform", "Platform"],
-            ] as const
-          ).map(([key, label]) => (
-            <div className="field" key={key}>
-              <label>{label}</label>
-              <input
-                value={project[key]}
-                onChange={(e) => setProject({ ...project, [key]: e.target.value })}
-              />
-            </div>
-          ))}
-
           <div className="actions">
             <button className="primary" type="button" disabled={busy} onClick={onEnsure}>
-              1. Ensure image
+              Ensure image
             </button>
-            {!imageReady &&
-              ensureResult &&
-              ["CREATING", "VALIDATING"].includes(ensureResult.imageStatus) &&
-              options?.simulateWorkers && (
-                <button
-                  className="secondary"
-                  type="button"
-                  disabled={busy}
-                  onClick={onSimulateFactory}
-                >
-                  Simulate factory
-                </button>
-              )}
-            <button
-              className="primary"
-              type="button"
-              disabled={busy || !imageReady}
-              onClick={onStartBuild}
-            >
-              2. Start build
-            </button>
-            {buildResult &&
-              !["SUCCEEDED", "PROFILE_REJECTED", "CANCELLED", "IMAGE_BUILD_FAILED", "PROJECT_BUILD_FAILED", "TEST_FAILED"].includes(
-                buildResult.status,
-              ) &&
-              options?.simulateWorkers && (
-                <button
-                  className="secondary"
-                  type="button"
-                  disabled={busy}
-                  onClick={onSimulateBuild}
-                >
-                  Simulate project
-                </button>
-              )}
           </div>
           {error && <div className="error">{error}</div>}
         </section>
 
         <section className="panel">
-          <h2>이미지 / 빌드</h2>
-          {!ensureResult && !buildResult && (
+          <h2>결과</h2>
+          {!ensureResult && (
             <p style={{ color: "var(--muted)", margin: 0 }}>
               Preset을 고르거나 구성 후 Ensure image를 실행하세요.
               {options ? ` Catalog ${options.catalogVersion}.` : ""}
@@ -543,61 +357,52 @@ export default function App() {
                   matchType: <span className="mono">{ensureResult.matchType}</span>
                 </div>
               )}
-              {ensureResult.requestedProfileHash && (
-                <div>
-                  requested: <span className="mono">{ensureResult.requestedProfileHash}</span>
-                </div>
-              )}
               {ensureResult.matchedProfileHash && (
                 <div>
-                  matched: <span className="mono">{ensureResult.matchedProfileHash}</span>
+                  profile: <span className="mono">{ensureResult.matchedProfileHash}</span>
                 </div>
               )}
               {ensureResult.image && (
-                <div>
-                  digest: <span className="mono">{ensureResult.image.digest}</span>
-                </div>
+                <>
+                  <div>
+                    repository:{" "}
+                    <span className="mono">
+                      {ensureResult.image.repository}:{ensureResult.image.tag}
+                    </span>
+                  </div>
+                  <div>
+                    digest: <span className="mono">{ensureResult.image.digest}</span>
+                  </div>
+                </>
               )}
-              {!!ensureResult.extraCapabilities?.length && (
-                <div>
-                  extra: <span className="mono">{ensureResult.extraCapabilities.join(", ")}</span>
-                </div>
+              {(ensureResult.localImageRef || ensureResult.localTarFile) && (
+                <>
+                  {ensureResult.localImageRef && (
+                    <div>
+                      local image: <span className="mono">{ensureResult.localImageRef}</span>
+                    </div>
+                  )}
+                  {ensureResult.localTarFile && (
+                    <div>
+                      saved tar:{" "}
+                      <span className="mono">./local-images/{ensureResult.localTarFile}</span>
+                    </div>
+                  )}
+                  <p className="hint" style={{ marginTop: "0.75rem" }}>
+                    확인:{" "}
+                    <span className="mono">docker images msbuild-local</span> /{" "}
+                    <span className="mono">
+                      docker load -i ./local-images/{ensureResult.localTarFile || "&lt;tag&gt;.tar"}
+                    </span>
+                  </p>
+                </>
               )}
               {!ensureResult.ready && ensureResult.estimatedWaitMinutes ? (
-                <div>estimated wait: ~{ensureResult.estimatedWaitMinutes} min</div>
+                <div>building… (~{ensureResult.estimatedWaitMinutes} min estimate)</div>
               ) : null}
               {ensureResult.errorMessage && (
                 <div className="error">{ensureResult.errorMessage}</div>
               )}
-            </div>
-          )}
-
-          {buildResult && (
-            <div className="result" style={{ marginTop: "1.25rem" }}>
-              <h2>Build request</h2>
-              <span
-                className={`badge ${
-                  ["BUILD_QUEUED", "SUCCEEDED"].includes(buildResult.status)
-                    ? "ok"
-                    : buildResult.status.includes("FAIL") || buildResult.status.includes("REJECT")
-                      ? "err"
-                      : "warn"
-                }`}
-              >
-                {buildResult.status}
-              </span>
-              <div>
-                id: <span className="mono">{buildResult.id}</span>
-              </div>
-              <div>
-                matchType: <span className="mono">{buildResult.matchType}</span>
-              </div>
-              {buildResult.imageDigest && (
-                <div>
-                  digest: <span className="mono">{buildResult.imageDigest}</span>
-                </div>
-              )}
-              {buildResult.errorMessage && <div className="error">{buildResult.errorMessage}</div>}
             </div>
           )}
         </section>

@@ -248,4 +248,4 @@ docker compose -f docker-compose.airgap.yml --env-file .env.airgap logs -f porta
 
 - Factory 호스트: `docs/factory-host-runbook.md`  
 - Jenkins: `jenkins/WIRING.md`  
-- 인터넷망 Mac 사전 검증: `docs/local-internet-verify-tutorial.md`
+- 로컬 단순 검증(로그인/Nexus 없음): `docs/local-verify-tutorial.md`

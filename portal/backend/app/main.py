@@ -84,6 +84,7 @@ def create_app(database_url: str | None = None, catalog_path: Path | None = None
             "status": status,
             "database": db_ok,
             "simulateWorkers": settings.simulate_workers,
+            "localFactory": settings.local_factory,
             "jenkinsConfigured": bool(settings.jenkins_url and settings.jenkins_api_token),
             "insecureDefaults": settings.allow_insecure_defaults and settings.is_default_hmac_secret,
             "gitResolveMode": settings.git_resolve_mode,

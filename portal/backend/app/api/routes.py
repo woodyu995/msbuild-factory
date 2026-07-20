@@ -191,6 +191,7 @@ def options(
         "estimatedImageBuildMinutes": catalog.estimated_minutes,
         "mvpFactoryEnabled": is_factory_enabled(catalog, settings),
         "simulateWorkers": settings.simulate_workers,
+        "localFactory": settings.local_factory,
         "requireAuth": settings.require_auth,
     }
 
@@ -317,6 +318,15 @@ def ensure_image_endpoint(
     image = None
     if data.get("image"):
         image = ImageRef(**data["image"])
+    local_image_ref = local_tar_path = local_tar_file = None
+    if settings.local_factory and data.get("matchedProfileHash"):
+        try:
+            status = get_image_status(session, data["matchedProfileHash"])
+            local_image_ref = status.get("localImageRef")
+            local_tar_path = status.get("localTarPath")
+            local_tar_file = status.get("localTarFile")
+        except LookupError:
+            pass
     return EnsureImageResponse(
         requestedProfileHash=data["requestedProfileHash"],
         matchedProfileHash=data["matchedProfileHash"],
@@ -332,6 +342,9 @@ def ensure_image_endpoint(
         errorCode=data["errorCode"],
         errorMessage=data["errorMessage"],
         ready=data["ready"],
+        localImageRef=local_image_ref,
+        localTarPath=local_tar_path,
+        localTarFile=local_tar_file,
     )
 
 
@@ -355,6 +368,9 @@ def image_status_endpoint(
         windowsBase=data["windowsBase"],
         factoryLeaseId=data["factoryLeaseId"],
         leaseExpiresAt=data["leaseExpiresAt"],
+        localImageRef=data.get("localImageRef"),
+        localTarPath=data.get("localTarPath"),
+        localTarFile=data.get("localTarFile"),
     )
 
 
