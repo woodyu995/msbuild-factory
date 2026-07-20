@@ -121,6 +121,13 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  function updateEnv(next: Environment) {
+    setEnv(next);
+    setEnsureResult(null);
+    setBuildResult(null);
+    setError(null);
+  }
+
   useEffect(() => {
     localStorage.setItem(TOKEN_KEY, apiToken);
   }, [apiToken]);
@@ -369,7 +376,7 @@ export default function App() {
                   className="preset"
                   type="button"
                   onClick={() =>
-                    setEnv({
+                    updateEnv({
                       ...preset.environment,
                       reuseMode: env.reuseMode,
                     })
@@ -390,7 +397,7 @@ export default function App() {
             <select
               value={env.visualStudio}
               onChange={(e) =>
-                setEnv({
+                updateEnv({
                   ...emptyEnv,
                   visualStudio: e.target.value,
                   reuseMode: env.reuseMode,
@@ -422,7 +429,7 @@ export default function App() {
                     key={value}
                     type="button"
                     className={`chip ${env[key].includes(value) ? "active" : ""}`}
-                    onClick={() => setEnv({ ...env, [key]: toggle(env[key], value) })}
+                    onClick={() => updateEnv({ ...env, [key]: toggle(env[key], value) })}
                   >
                     {value}
                   </button>
@@ -436,7 +443,7 @@ export default function App() {
             <select
               value={env.reuseMode}
               onChange={(e) =>
-                setEnv({
+                updateEnv({
                   ...env,
                   reuseMode: e.target.value as Environment["reuseMode"],
                 })

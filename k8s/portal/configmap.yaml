@@ -14,8 +14,11 @@ data:
   PORTAL_SIMULATE_WORKERS: "false"
   PORTAL_ALLOW_INSECURE_DEFAULTS: "false"
   PORTAL_FACTORY_ENABLED: "true"
-  # Nexus Docker hosted registry (group or hosted). Use the docker connector host:port.
-  PORTAL_REGISTRY_HOST: "nexus.nexus.svc.cluster.local:8082"
+  # Image refs for Windows workers + Portal DB. Must resolve on factory host AND workers.
+  # Do NOT use ClusterDNS here unless the factory Windows host can also resolve it.
+  PORTAL_REGISTRY_HOST: "nexus.company.io:8082"
+  # Optional: factory docker login/push host when DNS differs from pull host (same Nexus).
+  # PORTAL_REGISTRY_PUSH_HOST: "nexus.company.io:8082"
   PORTAL_REGISTRY_FINAL_REPO: "build/msbuild-profile"
   PORTAL_REGISTRY_STAGING_REPO: "build/msbuild-profile-staging"
   PORTAL_REGISTRY_PULL_SECRET: "nexus-docker-pull"

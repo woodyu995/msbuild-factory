@@ -1,8 +1,8 @@
 # Multi-stage: UI build + Portal API image for Kubernetes
 FROM node:22-alpine AS ui
 WORKDIR /ui
-COPY portal/frontend/package.json portal/frontend/package-lock.json* ./
-RUN npm install
+COPY portal/frontend/package.json portal/frontend/package-lock.json ./
+RUN npm ci
 COPY portal/frontend/ ./
 RUN npm run build
 

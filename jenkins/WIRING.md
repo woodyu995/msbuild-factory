@@ -42,12 +42,15 @@ Seed from `jenkins/README.md` Job DSL, or create Pipeline jobs pointing at:
 
 1. Start Portal with Jenkins URL unset (recording client)
 2. `POST /api/v1/images/ensure` for cold env → `CREATING`
-3. Run factory agent dry-run → READY
-4. `POST /api/v1/build-requests` → `BUILD_QUEUED`
-5. `GET /api/v1/build-requests/{id}/pod-template` → YAML with digest
+3. Run factory agent dry-run → READY (capability uses logical netfx ids e.g. `4.8`)
+4. `POST /api/v1/build-requests` with `matchedProfileHash` + `imageDigest` → `BUILD_QUEUED`
+5. `GET /api/v1/build-requests/{id}/pod-template` → YAML with digest + `nexus-docker-pull`
 6. Optional local only: `PORTAL_SIMULATE_WORKERS=true` then
    `POST /api/v1/images/{hash}/simulate` and/or
    `POST /api/v1/build-requests/{id}/simulate` → `SUCCEEDED`
+
+Registry: set `PORTAL_REGISTRY_HOST` to a name the **factory Windows host** can resolve
+(e.g. `nexus.company.io:8082`). Optional `PORTAL_REGISTRY_PUSH_HOST` if push DNS differs.
 
 ## 5. Production cutover
 

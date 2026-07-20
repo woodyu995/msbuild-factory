@@ -28,16 +28,6 @@ COLD_B = {
     "reuseMode": "exactReuse",
 }
 
-COLD_C = {
-    "visualStudio": "2022",
-    "dotnetFrameworks": ["4.8"],
-    "dotnetSdks": [],
-    "cppToolsets": ["v143"],
-    "windowsSdks": ["10.0.19041.0"],
-    "features": ["managed-desktop", "mfc", "atl"],
-    "reuseMode": "exactReuse",
-}
-
 
 def _client(tmp_path):
     import os
@@ -50,15 +40,13 @@ def _client(tmp_path):
 
 
 def test_ensure_factory_busy_returns_503(tmp_path):
+    # MAX_GLOBAL_CREATING=1 (aligned with Jenkins disableConcurrentBuilds)
     with _client(tmp_path) as client:
         a = client.post("/api/v1/images/ensure", json={"environment": COLD_A})
-        b = client.post("/api/v1/images/ensure", json={"environment": COLD_B})
         assert a.status_code == 200
-        assert b.status_code == 200
         assert a.json()["imageStatus"] == "CREATING"
-        assert b.json()["imageStatus"] == "CREATING"
 
-        busy = client.post("/api/v1/images/ensure", json={"environment": COLD_C})
+        busy = client.post("/api/v1/images/ensure", json={"environment": COLD_B})
         assert busy.status_code == 503
         detail = busy.json()["detail"]
         assert detail["code"] == "FACTORY_BUSY"

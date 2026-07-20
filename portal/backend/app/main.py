@@ -64,6 +64,11 @@ def create_app(database_url: str | None = None, catalog_path: Path | None = None
     )
     app.include_router(router)
 
+    @app.get("/livez")
+    def livez():
+        """Process liveness — no DB dependency (use for K8s livenessProbe)."""
+        return {"status": "alive"}
+
     @app.get("/healthz")
     def healthz():
         db_ok = False
@@ -84,6 +89,7 @@ def create_app(database_url: str | None = None, catalog_path: Path | None = None
             "gitResolveMode": settings.git_resolve_mode,
             "requireAuth": settings.require_auth,
             "registryHost": reg.host,
+            "registryPushHost": reg.push_host,
             "registryFinal": reg.final_image,
         }
 

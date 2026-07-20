@@ -70,12 +70,4 @@ spec:
         resources:
           requests:
             storage: 20Gi
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: postgres-secrets
-  namespace: msbuild-portal
-type: Opaque
-stringData:
-  POSTGRES_PASSWORD: "CHANGE_ME"
+# Create postgres-secrets before apply (see k8s/portal/secret.example.yaml).

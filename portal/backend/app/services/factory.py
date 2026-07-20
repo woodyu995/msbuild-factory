@@ -24,7 +24,8 @@ from app.services.jenkins import get_jenkins_client
 FACTORY_JOB = "msbuild-image-factory"
 PROJECT_JOB = "msbuild-project-build"
 DEFAULT_LEASE_MINUTES = 135
-MAX_GLOBAL_CREATING = 2
+# Keep aligned with Jenkins msbuild-image-factory (single factory node / disableConcurrentBuilds).
+MAX_GLOBAL_CREATING = 1
 
 
 class FactoryBusy(Exception):
@@ -335,9 +336,13 @@ def build_factory_artifacts(resolved_build_input: dict[str, Any], profile_hash: 
         "dockerfile": generate_dockerfile(resolved_build_input, profile_hash=profile_hash),
         "vsconfig": generate_vsconfig(resolved_build_input),
         "installManifest": generate_install_manifest(resolved_build_input),
-        "stagingRepository": reg.staging_image,
-        "finalRepository": reg.final_image,
-        "registryHost": reg.host,
+        # Push destinations (factory host docker login/tag/push)
+        "stagingRepository": reg.push_staging_image,
+        "finalRepository": reg.push_final_image,
+        "registryHost": reg.push_host,
+        # Pull/reference destinations (Windows workers / Portal DB)
+        "registryPullHost": reg.host,
+        "finalPullRepository": reg.final_image,
         "imageTag": f"vs{resolved_build_input['visualStudio']['generation']}-{profile_hash[:12]}",
     }
 

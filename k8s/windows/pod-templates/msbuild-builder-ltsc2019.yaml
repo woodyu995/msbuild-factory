@@ -20,7 +20,7 @@ spec:
       value: "true"
       effect: NoSchedule
   imagePullSecrets:
-    - name: internal-registry-secret
+    - name: nexus-docker-pull
   containers:
     - name: builder
       image: nexus.company.io/build/msbuild-profile@sha256:REPLACE_ME

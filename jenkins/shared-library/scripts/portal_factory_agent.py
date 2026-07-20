@@ -251,15 +251,29 @@ def cmd_build(args: argparse.Namespace) -> None:
     print(json.dumps({"ok": True, "dryRun": False, "imageDigest": digest, "finalTag": final_tag}))
 
 
+def _netfx_logical_version(resolved_version: str) -> str:
+    """Align measured capability with Portal matcher logical framework ids."""
+    if resolved_version.startswith("4.8."):
+        return "4.8"
+    if resolved_version == "4.6.0":
+        return "4.6"
+    return resolved_version
+
+
 def _capability_from_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
+    # Prefer explicit logical list from Portal installManifest (matcher ⊆ contract).
+    if manifest.get("dotnetFrameworks"):
+        frameworks = [str(v) for v in manifest["dotnetFrameworks"]]
+    else:
+        frameworks = [
+            _netfx_logical_version(
+                str(item.get("version") if isinstance(item, dict) else item)
+            )
+            for item in manifest.get("dotnetFrameworkTargetingPacks") or []
+        ]
     return {
         "visualStudio": manifest["visualStudio"]["generation"],
-        "dotnetFrameworks": [
-            # Prefer major.minor style when version looks like 4.8.1 -> keep as-is for measured;
-            # Portal matcher for frameworks uses requested logical values; simulation uses request env.
-            item.get("version") if isinstance(item, dict) else str(item)
-            for item in manifest.get("dotnetFrameworkTargetingPacks") or []
-        ],
+        "dotnetFrameworks": frameworks,
         "dotnetSdks": [
             {"version": item["version"]} if isinstance(item, dict) else {"version": str(item)}
             for item in manifest.get("dotnetSdks") or []

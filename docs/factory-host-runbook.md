@@ -83,7 +83,8 @@ python jenkins/shared-library/scripts/portal_factory_agent.py build \
 요구사항: Docker Engine(Windows containers), **Nexus docker login**, Layout/Installer 경로 존재.  
 `build`는 staging tag로 `docker build` → final tag → `docker login` → `docker push` → RepoDigest 수집 후 `result.json`에 기록한다.
 
-Portal `PORTAL_REGISTRY_HOST` / `PORTAL_REGISTRY_FINAL_REPO` 가 artifacts의 repository 경로를 결정한다.
+Portal `PORTAL_REGISTRY_HOST` (pull/ref)와 optional `PORTAL_REGISTRY_PUSH_HOST`(factory login/push)가
+artifacts의 repository 경로를 결정한다. Factory 호스트에서 해석 가능한 이름을 쓴다.
 
 ## 6. OS 호환
 

@@ -34,8 +34,9 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 5
           livenessProbe:
+            # Process liveness only — DB checked by readiness (/readyz)
             httpGet:
-              path: /healthz
+              path: /livez
               port: http
             initialDelaySeconds: 20
             periodSeconds: 15
@@ -78,15 +79,19 @@ spec:
       template:
         spec:
           restartPolicy: OnFailure
+          # If the cluster cannot pull docker hub freely, mirror python:3.12-slim to Nexus
+          # and set imagePullSecrets: [{name: nexus-docker-pull}]
           containers:
             - name: reconcile
               image: python:3.12-slim
-              envFrom:
-                - secretRef:
-                    name: portal-secrets
               env:
                 - name: PORTAL_URL
                   value: "http://portal.msbuild-portal.svc.cluster.local"
+                - name: PORTAL_CALLBACK_HMAC_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: portal-callback-hmac
+                      key: PORTAL_CALLBACK_HMAC_SECRET
               command:
                 - python
                 - -c

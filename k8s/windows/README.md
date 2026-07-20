@@ -22,7 +22,7 @@ Portal fills image digest + windowsBase + **Nexus registry host** from `PORTAL_R
 
 ## Checklist
 
-- [ ] Nexus docker pull secret `nexus-docker-pull` (namespace `msbuild-build`)
+- [ ] Nexus docker pull secret `nexus-docker-pull` (namespace `msbuild-build`; same name as Portal pod templates)
 - [ ] Hot Preset / profile images available on Nexus hosted docker repo
 - [ ] ephemeral-storage monitoring (alarm at 80%)
 - [ ] LTSC image ↔ node release match enforced by nodeSelector
