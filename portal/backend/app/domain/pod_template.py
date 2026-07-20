@@ -19,7 +19,9 @@ def render_windows_builder_pod(
     memory_limit: str = "16Gi",
     ephemeral_request: str = "20Gi",
     ephemeral_limit: str = "80Gi",
-    pull_secret_name: str = "internal-registry-secret",
+    pull_secret_name: str = "nexus-docker-pull",
+    registry_host: str = "nexus.company.io",
+    registry_final_repo: str = "build/msbuild-profile",
     purpose: str = "msbuild",
 ) -> dict[str, Any]:
     if windows_base not in SUPPORTED_WINDOWS_RELEASES:
@@ -31,7 +33,7 @@ def render_windows_builder_pod(
         else:
             raise ValueError("image_digest must be sha256:... or image@sha256:...")
     else:
-        image_ref = f"registry.internal/build/msbuild-profile@{image_digest}"
+        image_ref = f"{registry_host.rstrip('/')}/{registry_final_repo.strip('/')}@{image_digest}"
 
     safe_name = "".join(ch if ch.isalnum() or ch in "-." else "-" for ch in request_id).lower()
     pod_name = f"msbuild-{safe_name}"[:63].strip("-")

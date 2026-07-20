@@ -57,6 +57,18 @@ def _client(tmp_path, *, simulate: bool = False):
 
 def test_manual_auto_simulate_cold_to_succeeded(tmp_path):
     with _client(tmp_path, simulate=False) as client:
+        ensured = client.post("/api/v1/images/ensure", json={"environment": COLD_ENV}).json()
+        assert ensured["imageStatus"] == "CREATING"
+        profile_hash = ensured["matchedProfileHash"]
+
+        client.app.state.settings.simulate_workers = True
+        factory = client.post(f"/api/v1/images/{profile_hash}/simulate").json()
+        assert factory["ok"] is True
+        assert factory["imageDigest"].startswith("sha256:simulated-")
+
+        status = client.get(f"/api/v1/images/{profile_hash}").json()
+        assert status["ready"] is True
+
         created = client.post(
             "/api/v1/build-requests",
             json={
@@ -66,16 +78,15 @@ def test_manual_auto_simulate_cold_to_succeeded(tmp_path):
                     "solutionPath": "ColdApp.sln",
                 },
                 "environment": COLD_ENV,
+                "matchedProfileHash": profile_hash,
+                "imageDigest": status["image"]["digest"],
             },
         ).json()
-        assert created["status"] == "IMAGE_BUILD_QUEUED"
+        assert created["status"] in {"BUILD_QUEUED", "SUCCEEDED"}
 
-        # Enable simulation for the explicit endpoint only (no background auto on create).
-        client.app.state.settings.simulate_workers = True
+        # Background auto-advance may already have finished; simulate is idempotent.
         advanced = client.post(f"/api/v1/build-requests/{created['id']}/simulate").json()
         assert advanced["finalStatus"] == "SUCCEEDED"
-        assert any("factory" in step for step in advanced["steps"])
-        assert any("projectBuild" in step for step in advanced["steps"])
 
         got = client.get(f"/api/v1/build-requests/{created['id']}").json()
         assert got["status"] == "SUCCEEDED"
@@ -84,6 +95,22 @@ def test_manual_auto_simulate_cold_to_succeeded(tmp_path):
 
 def test_preset_reuse_simulate_project_only(tmp_path):
     with _client(tmp_path, simulate=False) as client:
+        ensured = client.post(
+            "/api/v1/images/ensure",
+            json={
+                "environment": {
+                    "visualStudio": "2022",
+                    "dotnetFrameworks": ["4.8"],
+                    "dotnetSdks": ["8.0"],
+                    "cppToolsets": [],
+                    "windowsSdks": [],
+                    "features": ["managed-desktop"],
+                    "reuseMode": "preferCompatible",
+                }
+            },
+        ).json()
+        assert ensured["ready"] is True
+
         created = client.post(
             "/api/v1/build-requests",
             json={
@@ -101,6 +128,8 @@ def test_preset_reuse_simulate_project_only(tmp_path):
                     "features": ["managed-desktop"],
                     "reuseMode": "preferCompatible",
                 },
+                "matchedProfileHash": ensured["matchedProfileHash"],
+                "imageDigest": ensured["image"]["digest"],
             },
         ).json()
         assert created["status"] == "BUILD_QUEUED"
@@ -113,8 +142,12 @@ def test_preset_reuse_simulate_project_only(tmp_path):
 
 def test_background_auto_simulate(tmp_path):
     with _client(tmp_path, simulate=True) as client:
-        # TestClient runs background tasks before returning response... actually
-        # after the response is sent. Starlette runs them after request completes.
+        ensured = client.post("/api/v1/images/ensure", json={"environment": COLD_ENV}).json()
+        profile_hash = ensured["matchedProfileHash"] or ensured["requestedProfileHash"]
+        # Background factory simulate should finish after ensure response.
+        status = client.get(f"/api/v1/images/{profile_hash}").json()
+        assert status["ready"] is True
+
         created = client.post(
             "/api/v1/build-requests",
             json={
@@ -124,9 +157,10 @@ def test_background_auto_simulate(tmp_path):
                     "solutionPath": "ColdApp.sln",
                 },
                 "environment": COLD_ENV,
+                "matchedProfileHash": profile_hash,
+                "imageDigest": status["image"]["digest"],
             },
         ).json()
-        # Immediately after POST, status may still be queued; background should finish.
         got = client.get(f"/api/v1/build-requests/{created['id']}").json()
         assert got["status"] == "SUCCEEDED"
 

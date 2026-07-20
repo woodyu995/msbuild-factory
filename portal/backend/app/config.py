@@ -37,6 +37,17 @@ class Settings(BaseSettings):
     git_http_base_url: str | None = None
     git_token: str | None = None
     git_require_exact: bool = False
+    # Nexus (or other) Docker registry.
+    # registry_host: image refs for workers / DB (must resolve on Windows build nodes).
+    # registry_push_host: optional override for factory docker login/push (factory Windows host).
+    # If unset, push uses registry_host. Prefer one externally resolvable name for both.
+    registry_host: str = "nexus.company.io"
+    registry_push_host: str | None = None
+    registry_final_repo: str = "build/msbuild-profile"
+    registry_staging_repo: str = "build/msbuild-profile-staging"
+    registry_pull_secret: str = "nexus-docker-pull"
+    # Comma-separated CORS origins; empty = allow all (dev only)
+    cors_origins: str = "*"
 
     @property
     def is_default_hmac_secret(self) -> bool:

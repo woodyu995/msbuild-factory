@@ -90,25 +90,20 @@ def test_validate_rejects_unknown_combination(client: TestClient):
 
 
 def test_create_build_request_and_idempotency(client: TestClient):
-    payload = {
-        "project": {
+    from tests.helpers import HOT_ENV, build_payload, ensure_ready
+
+    ensured = ensure_ready(client, HOT_ENV)
+    payload = build_payload(
+        ensured=ensured,
+        project={
             "repository": "ProductClient",
             "gitRef": "release/2.1",
             "solutionPath": "ProductClient.sln",
             "configuration": "Release",
             "platform": "x64",
         },
-        "environment": {
-            "visualStudio": "2022",
-            "dotnetFrameworks": ["4.8"],
-            "dotnetSdks": ["8.0"],
-            "cppToolsets": [],
-            "windowsSdks": [],
-            "features": ["managed-desktop"],
-            "reuseMode": "preferCompatible",
-        },
-        "nuget": {"mode": "repo-packages-and-internal-feed"},
-    }
+    )
+    payload["nuget"] = {"mode": "repo-packages-and-internal-feed"}
     headers = {"Idempotency-Key": "idem-1", "X-Actor": "tester"}
     r1 = client.post("/api/v1/build-requests", json=payload, headers=headers)
     r2 = client.post("/api/v1/build-requests", json=payload, headers=headers)
@@ -125,21 +120,17 @@ def test_create_build_request_and_idempotency(client: TestClient):
 
 
 def test_internal_callback_hmac(client: TestClient):
-    payload = {
-        "project": {
+    from tests.helpers import HOT_ENV, build_payload, ensure_ready
+
+    ensured = ensure_ready(client, HOT_ENV)
+    payload = build_payload(
+        ensured=ensured,
+        project={
             "repository": "ProductClient",
             "gitRef": "abc",
             "solutionPath": "A.sln",
         },
-        "environment": {
-            "visualStudio": "2022",
-            "dotnetFrameworks": ["4.8"],
-            "dotnetSdks": ["8.0"],
-            "cppToolsets": [],
-            "windowsSdks": [],
-            "features": ["managed-desktop"],
-        },
-    }
+    )
     created = client.post("/api/v1/build-requests", json=payload).json()
     body = {
         "requestId": created["id"],

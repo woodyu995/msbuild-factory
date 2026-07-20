@@ -46,6 +46,10 @@ bash ../scripts/smoke-cutover.sh
 | `PORTAL_DEFAULT_ACTOR_ROLES` | Default when auth off (default `builder`; use `operator` for local Simulate UI) |
 | `PORTAL_SIMULATE_WORKERS` | Local auto-advance only |
 | `PORTAL_JENKINS_*` | Real Jenkins trigger |
+| `PORTAL_DATABASE_URL` | Postgres URL (`postgresql+psycopg://…`) in cluster |
+| `PORTAL_REGISTRY_HOST` | Nexus docker connector host:port |
+| `PORTAL_REGISTRY_FINAL_REPO` | e.g. `build/msbuild-profile` |
+| `PORTAL_REGISTRY_STAGING_REPO` | e.g. `build/msbuild-profile-staging` |
 
 ## Frontend
 
@@ -57,14 +61,18 @@ npm run dev
 
 UI proxies `/api` to `http://127.0.0.1:8000`.
 
-## Local complete path
+## Local complete path (API split B)
 
-1. Submit build request (Preset reuse → `BUILD_QUEUED`, cold → `IMAGE_BUILD_QUEUED`)
-2. Click **Simulate workers** in UI, or:
+1. `POST /api/v1/images/ensure` with environment → reuse READY or start factory
+2. Poll `GET /api/v1/images/{profileHash}` until `ready: true` (or Simulate factory)
+3. `POST /api/v1/build-requests` with project + environment + required `matchedProfileHash` / `imageDigest` → `BUILD_QUEUED`
+4. Click **Simulate project** in UI, or:
    ```bash
    curl -X POST http://127.0.0.1:8000/api/v1/build-requests/{id}/simulate
    ```
-3. Request advances to `SUCCEEDED` with simulated image digest
+5. Request advances to `SUCCEEDED` with simulated image digest
+
+Cold profiles return `409 IMAGE_NOT_READY` from build-requests until ensure finishes.
 
 ## Scope notes
 

@@ -18,11 +18,11 @@ Runtime rendering (preferred):
 GET /api/v1/build-requests/{id}/pod-template
 ```
 
-Portal fills image digest + windowsBase from the resolved request.
+Portal fills image digest + windowsBase + **Nexus registry host** from `PORTAL_REGISTRY_*`.
 
 ## Checklist
 
-- [ ] Internal registry pull secret `internal-registry-secret`
-- [ ] Hot Preset images pre-pulled on nodes
+- [ ] Nexus docker pull secret `nexus-docker-pull` (namespace `msbuild-build`; same name as Portal pod templates)
+- [ ] Hot Preset / profile images available on Nexus hosted docker repo
 - [ ] ephemeral-storage monitoring (alarm at 80%)
 - [ ] LTSC image ↔ node release match enforced by nodeSelector

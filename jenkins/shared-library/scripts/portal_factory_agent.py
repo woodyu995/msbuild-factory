@@ -181,11 +181,29 @@ def cmd_build(args: argparse.Namespace) -> None:
     if built.returncode != 0:
         raise SystemExit(f"docker build failed: {built.stderr or built.stdout}")
 
-    # Promote staging -> final tag locally, push, then prefer registry RepoDigest.
+    # Promote staging -> final tag locally, login to Nexus if configured, then push.
     subprocess.run(["docker", "tag", staging_tag, final_tag], check=True)
+
+    nexus_user = os.environ.get("NEXUS_DOCKER_USER") or os.environ.get("REGISTRY_USER")
+    nexus_pass = os.environ.get("NEXUS_DOCKER_PASSWORD") or os.environ.get("REGISTRY_PASSWORD")
+    registry_host = (arts.get("registryHost") or os.environ.get("NEXUS_REGISTRY_HOST") or "").strip()
+    if nexus_user and nexus_pass and registry_host:
+        login = subprocess.run(
+            ["docker", "login", registry_host, "-u", nexus_user, "--password-stdin"],
+            input=nexus_pass,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if login.returncode != 0:
+            raise SystemExit(f"docker login to Nexus failed: {login.stderr or login.stdout}")
+
+    # Also push staging (optional audit trail) then final.
+    if os.environ.get("FACTORY_PUSH_STAGING", "").lower() in {"1", "true", "yes"}:
+        subprocess.run(["docker", "push", staging_tag], check=False)
     push = subprocess.run(["docker", "push", final_tag], check=False, capture_output=True, text=True)
     if push.returncode != 0:
-        raise SystemExit(f"docker push failed: {push.stderr or push.stdout}")
+        raise SystemExit(f"docker push to Nexus failed: {push.stderr or push.stdout}")
 
     digest = ""
     inspect = subprocess.run(
@@ -233,15 +251,29 @@ def cmd_build(args: argparse.Namespace) -> None:
     print(json.dumps({"ok": True, "dryRun": False, "imageDigest": digest, "finalTag": final_tag}))
 
 
+def _netfx_logical_version(resolved_version: str) -> str:
+    """Align measured capability with Portal matcher logical framework ids."""
+    if resolved_version.startswith("4.8."):
+        return "4.8"
+    if resolved_version == "4.6.0":
+        return "4.6"
+    return resolved_version
+
+
 def _capability_from_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
+    # Prefer explicit logical list from Portal installManifest (matcher ⊆ contract).
+    if manifest.get("dotnetFrameworks"):
+        frameworks = [str(v) for v in manifest["dotnetFrameworks"]]
+    else:
+        frameworks = [
+            _netfx_logical_version(
+                str(item.get("version") if isinstance(item, dict) else item)
+            )
+            for item in manifest.get("dotnetFrameworkTargetingPacks") or []
+        ]
     return {
         "visualStudio": manifest["visualStudio"]["generation"],
-        "dotnetFrameworks": [
-            # Prefer major.minor style when version looks like 4.8.1 -> keep as-is for measured;
-            # Portal matcher for frameworks uses requested logical values; simulation uses request env.
-            item.get("version") if isinstance(item, dict) else str(item)
-            for item in manifest.get("dotnetFrameworkTargetingPacks") or []
-        ],
+        "dotnetFrameworks": frameworks,
         "dotnetSdks": [
             {"version": item["version"]} if isinstance(item, dict) else {"version": str(item)}
             for item in manifest.get("dotnetSdks") or []

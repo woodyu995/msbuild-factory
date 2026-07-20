@@ -3,17 +3,29 @@ from __future__ import annotations
 import json
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.models import BuildImage, BuildImageCapability, utcnow
 from app.domain.capability_matcher import capability_keys
 from app.domain.catalog import Catalog
 from app.domain.profile_resolver import resolve_profile
+from app.domain.registry import registry_from_settings
 from app.services.image_resolve import capability_from_environment, ensure_profile_row
 
 
+def _default_image_repository() -> str:
+    from app.config import get_settings
+
+    return registry_from_settings(get_settings()).final_image
+
+
 def seed_preset_images(session: Session, catalog: Catalog, actor: str = "seed") -> list[str]:
-    """Create READY Hot preset images for MVP (factory closed)."""
+    """Create READY Hot preset images for MVP (factory closed).
+
+    Safe under multi-replica startup: concurrent inserts of the same profile hash
+    are treated as already-seeded.
+    """
     created: list[str] = []
     for preset in catalog.presets:
         env = dict(preset["environment"])
@@ -36,7 +48,7 @@ def seed_preset_images(session: Session, catalog: Catalog, actor: str = "seed") 
         digest = f"sha256:preset-{preset['id']}-{resolved.profile_hash[:16]}"
         image = existing or BuildImage(
             profile_hash=resolved.profile_hash,
-            image_repository="registry.internal/build/msbuild-profile",
+            image_repository=_default_image_repository(),
             image_tag=tag,
             image_digest=digest,
             status="READY",
@@ -59,7 +71,20 @@ def seed_preset_images(session: Session, catalog: Catalog, actor: str = "seed") 
             image.ready_at = utcnow()
         else:
             session.add(image)
-            session.flush()
+            try:
+                with session.begin_nested():
+                    session.flush()
+            except IntegrityError:
+                session.expunge(image)
+                raced = session.scalar(
+                    select(BuildImage).where(
+                        BuildImage.profile_hash == resolved.profile_hash,
+                        BuildImage.status != "DELETED",
+                    )
+                )
+                if raced is None:
+                    raise
+                continue
 
         # refresh capability rows
         for cap in list(image.capabilities):

@@ -20,11 +20,11 @@ spec:
       value: "true"
       effect: NoSchedule
   imagePullSecrets:
-    - name: internal-registry-secret
+    - name: nexus-docker-pull
   containers:
     - name: builder
       # Replace digest at runtime from Portal resolve
-      image: registry.internal/build/msbuild-profile@sha256:REPLACE_ME
+      image: nexus.company.io/build/msbuild-profile@sha256:REPLACE_ME
       imagePullPolicy: IfNotPresent
       workingDir: C:\workspace
       resources:

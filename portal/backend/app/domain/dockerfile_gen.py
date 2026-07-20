@@ -64,13 +64,31 @@ def generate_dockerfile(build_input: dict[str, Any], *, profile_hash: str) -> st
     return "\n".join(lines)
 
 
+def _netfx_logical_version(resolved_version: str) -> str:
+    """Map installer resolvedVersion back to catalog logical framework id."""
+    if resolved_version.startswith("4.8."):
+        return "4.8"
+    if resolved_version == "4.6.0":
+        return "4.6"
+    return resolved_version
+
+
 def generate_install_manifest(build_input: dict[str, Any]) -> dict[str, Any]:
     """Manifest consumed by Install-BuildEnvironment.cmd on the Factory host."""
+    packs = list(build_input.get("dotnetFrameworkTargetingPacks") or [])
+    # Logical frameworks for capability matching (not installer patch versions).
+    logical_frameworks = sorted(
+        {
+            _netfx_logical_version(str(item.get("version") if isinstance(item, dict) else item))
+            for item in packs
+        }
+    )
     return {
         "windowsBase": build_input["windowsBase"],
         "agentBase": build_input["agentBase"],
         "visualStudio": build_input["visualStudio"],
-        "dotnetFrameworkTargetingPacks": build_input.get("dotnetFrameworkTargetingPacks") or [],
+        "dotnetFrameworkTargetingPacks": packs,
+        "dotnetFrameworks": logical_frameworks,
         "dotnetSdks": build_input.get("dotnetSdks") or [],
         "windowsSdks": build_input.get("windowsSdks") or [],
         "cppToolsets": build_input.get("cppToolsets") or [],

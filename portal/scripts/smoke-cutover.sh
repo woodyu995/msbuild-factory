@@ -36,7 +36,24 @@ with TestClient(app) as client:
     assert opts["catalogVersion"], opts
     print("OK options", opts["catalogVersion"], "presets", len(opts["presets"]))
 
-    # Preset reuse path
+    hot_env = {
+        "visualStudio": "2022",
+        "dotnetFrameworks": ["4.8"],
+        "dotnetSdks": ["8.0"],
+        "cppToolsets": [],
+        "windowsSdks": [],
+        "features": ["managed-desktop"],
+        "reuseMode": "preferCompatible",
+    }
+
+    # Step 1: ensure READY preset image
+    ensured = client.post("/api/v1/images/ensure", json={"environment": hot_env})
+    assert ensured.status_code == 200, ensured.text
+    ensure_body = ensured.json()
+    assert ensure_body["ready"] is True, ensure_body
+    print("OK ensure preset", ensure_body["matchType"], ensure_body["image"]["digest"][:20])
+
+    # Step 2: start build against READY image
     created = client.post(
         "/api/v1/build-requests",
         headers={"Idempotency-Key": "smoke-preset-1"},
@@ -46,15 +63,9 @@ with TestClient(app) as client:
                 "gitRef": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "solutionPath": "ProductClient.sln",
             },
-            "environment": {
-                "visualStudio": "2022",
-                "dotnetFrameworks": ["4.8"],
-                "dotnetSdks": ["8.0"],
-                "cppToolsets": [],
-                "windowsSdks": [],
-                "features": ["managed-desktop"],
-                "reuseMode": "preferCompatible",
-            },
+            "environment": hot_env,
+            "matchedProfileHash": ensure_body["matchedProfileHash"],
+            "imageDigest": ensure_body["image"]["digest"],
         },
     )
     assert created.status_code == 200, created.text
@@ -73,22 +84,29 @@ with TestClient(app) as client:
                 "gitRef": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                 "solutionPath": "Other.sln",
             },
-            "environment": {
-                "visualStudio": "2022",
-                "dotnetFrameworks": ["4.8"],
-                "dotnetSdks": ["8.0"],
-                "cppToolsets": [],
-                "windowsSdks": [],
-                "features": ["managed-desktop"],
-                "reuseMode": "preferCompatible",
-            },
+            "environment": hot_env,
+            "matchedProfileHash": ensure_body["matchedProfileHash"],
+            "imageDigest": ensure_body["image"]["digest"],
         },
     )
     assert conflict.status_code == 409, conflict.text
     print("OK idempotency conflict")
 
-    # Cold factory path + artifacts + dry-run agent finalize path via HMAC reconcile
-    cold = client.post(
+    cold_env = {
+        "visualStudio": "2022",
+        "dotnetFrameworks": ["4.8"],
+        "dotnetSdks": [],
+        "cppToolsets": ["v143"],
+        "windowsSdks": ["10.0.22621.0"],
+        "features": ["managed-desktop", "mfc"],
+        "reuseMode": "exactReuse",
+    }
+
+    # Cold: ensure starts factory; build must 409 until READY
+    cold = client.post("/api/v1/images/ensure", json={"environment": cold_env}).json()
+    assert cold["imageStatus"] == "CREATING", cold
+    profile = cold["matchedProfileHash"]
+    denied = client.post(
         "/api/v1/build-requests",
         json={
             "project": {
@@ -96,19 +114,15 @@ with TestClient(app) as client:
                 "gitRef": "main",
                 "solutionPath": "ColdApp.sln",
             },
-            "environment": {
-                "visualStudio": "2022",
-                "dotnetFrameworks": ["4.8"],
-                "dotnetSdks": [],
-                "cppToolsets": ["v143"],
-                "windowsSdks": ["10.0.22621.0"],
-                "features": ["managed-desktop", "mfc"],
-                "reuseMode": "exactReuse",
-            },
+            "environment": cold_env,
+            "matchedProfileHash": profile,
+            "imageDigest": "sha256:pending-not-ready",
         },
-    ).json()
-    assert cold["status"] == "IMAGE_BUILD_QUEUED", cold
-    profile = cold["requestedProfileHash"]
+    )
+    assert denied.status_code == 409, denied.text
+    assert denied.json()["detail"]["code"] == "IMAGE_NOT_READY"
+    print("OK cold build blocked until READY")
+
     from app.db.models import BuildImage
     session = client.app.state.session_factory()
     image = session.query(BuildImage).filter_by(profile_hash=profile).one()
@@ -127,11 +141,30 @@ with TestClient(app) as client:
     assert "dockerfile" in arts.json()
     print("OK factory-artifacts with lease")
 
-    # Simulate with operator default roles
+    # Simulate factory then start build
     client.app.state.settings.simulate_workers = True
-    sim = client.post(f"/api/v1/build-requests/{cold['id']}/simulate")
+    sim_img = client.post(f"/api/v1/images/{profile}/simulate")
+    assert sim_img.status_code == 200, sim_img.text
+    status = client.get(f"/api/v1/images/{profile}").json()
+    assert status["ready"] is True, status
+
+    cold_build = client.post(
+        "/api/v1/build-requests",
+        json={
+            "project": {
+                "repository": "ColdApp",
+                "gitRef": "main",
+                "solutionPath": "ColdApp.sln",
+            },
+            "environment": cold_env,
+            "matchedProfileHash": profile,
+            "imageDigest": status["image"]["digest"],
+        },
+    ).json()
+    assert cold_build["status"] == "BUILD_QUEUED", cold_build
+    sim = client.post(f"/api/v1/build-requests/{cold_build['id']}/simulate")
     assert sim.status_code == 200, sim.text
-    got = client.get(f"/api/v1/build-requests/{cold['id']}").json()
+    got = client.get(f"/api/v1/build-requests/{cold_build['id']}").json()
     assert got["status"] == "SUCCEEDED", got
     print("OK simulate cold -> SUCCEEDED")
 

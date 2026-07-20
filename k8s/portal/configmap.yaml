@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: portal-config
+  namespace: msbuild-portal
+data:
+  # Cluster DNS examples — adjust namespace/service names to match your Jenkins/Nexus
+  PORTAL_JENKINS_URL: "http://jenkins.jenkins.svc.cluster.local:8080/"
+  PORTAL_JENKINS_USERNAME: "portal-bot"
+  PORTAL_GIT_RESOLVE_MODE: "ls_remote"
+  PORTAL_GIT_URL_TEMPLATE: "https://git.internal/{repository}.git"
+  PORTAL_GIT_REQUIRE_EXACT: "true"
+  PORTAL_REQUIRE_AUTH: "true"
+  PORTAL_SIMULATE_WORKERS: "false"
+  PORTAL_ALLOW_INSECURE_DEFAULTS: "false"
+  PORTAL_FACTORY_ENABLED: "true"
+  # Image refs for Windows workers + Portal DB. Must resolve on factory host AND workers.
+  # Do NOT use ClusterDNS here unless the factory Windows host can also resolve it.
+  PORTAL_REGISTRY_HOST: "nexus.company.io:8082"
+  # Optional: factory docker login/push host when DNS differs from pull host (same Nexus).
+  # PORTAL_REGISTRY_PUSH_HOST: "nexus.company.io:8082"
+  PORTAL_REGISTRY_FINAL_REPO: "build/msbuild-profile"
+  PORTAL_REGISTRY_STAGING_REPO: "build/msbuild-profile-staging"
+  PORTAL_REGISTRY_PULL_SECRET: "nexus-docker-pull"
+  PORTAL_CORS_ORIGINS: "https://build-portal.company.io"
+  PORTAL_DEFAULT_ACTOR_ROLES: "builder"

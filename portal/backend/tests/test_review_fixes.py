@@ -27,14 +27,9 @@ def _client(tmp_path, **env):
 
 def test_expired_lease_status_callback_rejected(tmp_path):
     with _client(tmp_path) as client:
-        created = client.post(
-            "/api/v1/build-requests",
+        ensured = client.post(
+            "/api/v1/images/ensure",
             json={
-                "project": {
-                    "repository": "ColdApp",
-                    "gitRef": "main",
-                    "solutionPath": "ColdApp.sln",
-                },
                 "environment": {
                     "visualStudio": "2022",
                     "dotnetFrameworks": ["4.8"],
@@ -46,7 +41,7 @@ def test_expired_lease_status_callback_rejected(tmp_path):
                 },
             },
         ).json()
-        profile_hash = created["requestedProfileHash"]
+        profile_hash = ensured["matchedProfileHash"]
         session = client.app.state.session_factory()
         image = session.query(BuildImage).filter_by(profile_hash=profile_hash).one()
         lease_id = image.lease_id
@@ -72,14 +67,9 @@ def test_expired_lease_status_callback_rejected(tmp_path):
 
 def test_null_lease_status_callback_rejected(tmp_path):
     with _client(tmp_path) as client:
-        created = client.post(
-            "/api/v1/build-requests",
+        ensured = client.post(
+            "/api/v1/images/ensure",
             json={
-                "project": {
-                    "repository": "ColdApp",
-                    "gitRef": "main",
-                    "solutionPath": "ColdApp.sln",
-                },
                 "environment": {
                     "visualStudio": "2022",
                     "dotnetFrameworks": ["4.8"],
@@ -91,7 +81,7 @@ def test_null_lease_status_callback_rejected(tmp_path):
                 },
             },
         ).json()
-        profile_hash = created["requestedProfileHash"]
+        profile_hash = ensured["matchedProfileHash"]
         session = client.app.state.session_factory()
         image = session.query(BuildImage).filter_by(profile_hash=profile_hash).one()
         image.lease_id = None
@@ -117,24 +107,20 @@ def test_null_lease_status_callback_rejected(tmp_path):
 
 
 def test_simulate_disabled_by_default(tmp_path):
+    from tests.helpers import HOT_ENV, build_payload, ensure_ready
+
     with _client(tmp_path, simulate="false") as client:
+        ensured = ensure_ready(client, HOT_ENV)
         created = client.post(
             "/api/v1/build-requests",
-            json={
-                "project": {
+            json=build_payload(
+                ensured=ensured,
+                project={
                     "repository": "ProductClient",
                     "gitRef": "main",
                     "solutionPath": "A.sln",
                 },
-                "environment": {
-                    "visualStudio": "2022",
-                    "dotnetFrameworks": ["4.8"],
-                    "dotnetSdks": ["8.0"],
-                    "cppToolsets": [],
-                    "windowsSdks": [],
-                    "features": ["managed-desktop"],
-                },
-            },
+            ),
         ).json()
         resp = client.post(f"/api/v1/build-requests/{created['id']}/simulate")
         assert resp.status_code == 403
@@ -142,14 +128,9 @@ def test_simulate_disabled_by_default(tmp_path):
 
 def test_factory_artifacts_requires_hmac_and_lease(tmp_path):
     with _client(tmp_path) as client:
-        created = client.post(
-            "/api/v1/build-requests",
+        ensured = client.post(
+            "/api/v1/images/ensure",
             json={
-                "project": {
-                    "repository": "ColdApp",
-                    "gitRef": "main",
-                    "solutionPath": "ColdApp.sln",
-                },
                 "environment": {
                     "visualStudio": "2022",
                     "dotnetFrameworks": ["4.8"],
@@ -161,7 +142,7 @@ def test_factory_artifacts_requires_hmac_and_lease(tmp_path):
                 },
             },
         ).json()
-        profile_hash = created["requestedProfileHash"]
+        profile_hash = ensured["matchedProfileHash"]
         denied = client.post(f"/internal/v1/images/{profile_hash}/factory-artifacts", json={})
         assert denied.status_code == 401
 
@@ -240,6 +221,7 @@ def test_internal_simulate_requires_hmac(tmp_path):
 
 def test_api_simulate_denied_for_builder_role(tmp_path):
     import os
+    from tests.helpers import HOT_ENV, build_payload
 
     os.environ["PORTAL_SIMULATE_WORKERS"] = "true"
     os.environ["PORTAL_DEFAULT_ACTOR_ROLES"] = "builder"
@@ -248,23 +230,17 @@ def test_api_simulate_denied_for_builder_role(tmp_path):
     reset_jenkins_client()
     app = create_app(database_url=f"sqlite:///{tmp_path / 'builder-sim.db'}")
     with TestClient(app) as client:
+        ensured = client.post("/api/v1/images/ensure", json={"environment": HOT_ENV}).json()
         created = client.post(
             "/api/v1/build-requests",
-            json={
-                "project": {
+            json=build_payload(
+                ensured=ensured,
+                project={
                     "repository": "ProductClient",
                     "gitRef": "main",
                     "solutionPath": "A.sln",
                 },
-                "environment": {
-                    "visualStudio": "2022",
-                    "dotnetFrameworks": ["4.8"],
-                    "dotnetSdks": ["8.0"],
-                    "cppToolsets": [],
-                    "windowsSdks": [],
-                    "features": ["managed-desktop"],
-                },
-            },
+            ),
         ).json()
         resp = client.post(f"/api/v1/build-requests/{created['id']}/simulate")
         assert resp.status_code == 403
@@ -286,24 +262,20 @@ def test_hmac_length_mismatch_is_401():
 
 
 def test_invalid_build_event_transition(tmp_path):
+    from tests.helpers import HOT_ENV, build_payload, ensure_ready
+
     with _client(tmp_path) as client:
+        ensured = ensure_ready(client, HOT_ENV)
         created = client.post(
             "/api/v1/build-requests",
-            json={
-                "project": {
+            json=build_payload(
+                ensured=ensured,
+                project={
                     "repository": "ProductClient",
                     "gitRef": "main",
                     "solutionPath": "A.sln",
                 },
-                "environment": {
-                    "visualStudio": "2022",
-                    "dotnetFrameworks": ["4.8"],
-                    "dotnetSdks": ["8.0"],
-                    "cppToolsets": [],
-                    "windowsSdks": [],
-                    "features": ["managed-desktop"],
-                },
-            },
+            ),
         ).json()
         # Jump from BUILD_QUEUED directly with IMAGE_BUILDING should fail
         body = {
