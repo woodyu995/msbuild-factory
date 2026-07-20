@@ -1,19 +1,14 @@
-# Internet-side local verify (Docker only, no K8s / Jenkins / Windows required)
-#
-# IMPORTANT: Portal images are Linux (node/python alpine/slim).
-# If Docker is in Windows container mode you will see:
-#   no matching manifest for windows(10.0.20348)/amd64 ...
-# Fix: switch to Linux containers (Docker Desktop tray → "Switch to Linux containers")
-# or use WSL2 / a Linux host. Then:
+# Local verify on Intel macOS (Docker Desktop → Linux VM, amd64)
+# Usage (repo root):
 #   docker compose -f docker-compose.local.yml up --build
+#
+# Portal is Linux-only (node/python). On Intel Mac this is the native path.
 services:
   portal:
     platform: linux/amd64
     build:
       context: .
       dockerfile: portal/Dockerfile
-      platforms:
-        - linux/amd64
     ports:
       - "8000:8000"
     environment:
@@ -22,7 +17,6 @@ services:
       PORTAL_DEFAULT_ACTOR_ROLES: "operator,builder"
       PORTAL_REQUIRE_AUTH: "false"
       PORTAL_GIT_RESOLVE_MODE: "placeholder"
-      # SQLite inside the container (ephemeral). Fine for verify.
       PORTAL_DATABASE_URL: "sqlite:////tmp/portal-local.db"
       PORTAL_REGISTRY_HOST: "nexus.company.io"
     healthcheck:
@@ -30,4 +24,4 @@ services:
       interval: 10s
       timeout: 3s
       retries: 10
-      start_period: 20s
+      start_period: 25s

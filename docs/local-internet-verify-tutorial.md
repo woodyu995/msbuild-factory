@@ -1,105 +1,121 @@
-# 인터넷망 로컬 검증 튜토리얼 (Docker만)
+# 인터넷망 로컬 검증 튜토리얼 (Intel macOS + Docker)
 
-폐쇄망(k9s + Jenkins)에 올리기 **전에**, 인터넷망 PC에서 Portal 동작을 확인하는 순서입니다.
+대상: **Intel 기반 macOS** (예: MacBook Pro 2019 등), Docker만 사용 가능한 인터넷망 PC.
 
-이 환경에서는 **Windows 이미지 실빌드 / Nexus 실push / Jenkins** 는 하지 않습니다.  
-대신 Portal이 시나리오대로 **이미지 조회 → (없으면) Factory 시작 상태 → READY → 이미지 정보 반환** 하는지를 **simulation**으로 검증합니다.
+폐쇄망(k9s + Jenkins + Windows Factory)에 올리기 **전에**, 이 Mac에서 Portal이 아래 시나리오대로 동작하는지 확인합니다.
+
+1. 포털 접속  
+2. 빌드 툴 선택  
+3. 이미지 있으면 정보 반환  
+4. 없으면 생성(로컬 **simulation**) → READY → 이미지 정보 반환  
+
+이 단계에서는 **실제 Windows Docker 빌드 / Nexus push / Jenkins 호출**은 하지 않습니다.
 
 ---
 
-## 0. 준비물
+## 0. 준비물 (Intel Mac)
 
-- Docker Desktop (또는 Docker Engine) + `docker compose`
-- **Linux 컨테이너 모드** (중요 — 아래 참고)
-- 이 저장소 클론본
-- 브라우저
-- (선택) `curl`
+| 항목 | 권장 |
+|------|------|
+| OS | macOS (Intel / x86_64) |
+| Docker | [Docker Desktop for Mac](https://docs.docker.com/desktop/setup/install/mac-install/) |
+| Compose | Docker Desktop에 포함 (`docker compose`) |
+| 기타 | 브라우저, Terminal.app 또는 iTerm |
 
-권장 OS: Linux / macOS / Windows + **WSL2 / Linux containers**
+칩 확인:
+
+```bash
+uname -m
+# 기대값: x86_64   ← Intel Mac
+# arm64 이면 Apple Silicon용 안내가 따로 필요합니다 (이 문서는 Intel 기준)
+```
+
+Docker 확인:
+
+```bash
+docker version
+docker compose version
+docker info --format '{{.OSType}} / {{.Architecture}}'
+# 기대 예: linux / x86_64
+```
+
+저장소:
 
 ```bash
 git clone <repo-url> msbuild-factory
 cd msbuild-factory
-git checkout cursor/portal-mvp-implementation-03e9   # 작업 브랜치
+git checkout cursor/portal-mvp-implementation-03e9
+git pull
 ```
 
-### 0-1. Windows에서 필수: Linux 컨테이너로 전환
-
-Portal Dockerfile은 `node:22-alpine`, `python:3.12-slim` 등 **Linux 이미지**만 사용합니다.  
-Docker가 Windows 컨테이너 모드면 아래 에러가 납니다.
-
-```text
-no matching manifest for windows(10.0.20348)/amd64 in the manifest list entries
-```
-
-해결:
-
-1. **Docker Desktop** 쓰는 경우  
-   - 트레이 아이콘 우클릭 → **Switch to Linux containers…**  
-   - 전환 후 `docker version` 의 OS/Arch 가 `linux` 인지 확인
-2. **Windows Server + Docker** 만 있고 Linux 컨테이너가 불가한 경우  
-   - WSL2 / Linux VM에서 실행하거나  
-   - 아래 **§5 Docker 없이 호스트 실행** 사용
-3. 확인 명령:
-
-```bash
-docker info --format '{{.OSType}}'
-# 기대값: linux
-# windows 가 나오면 아직 Windows 컨테이너 모드입니다.
-```
+> Intel Mac + Docker Desktop은 기본적으로 **Linux 컨테이너**를 씁니다.  
+> Windows의 “Switch to Linux containers” 이슈는 Mac에서는 해당 없습니다.
 
 ---
 
-## 1. 한 줄로 Portal 띄우기 (추천)
+## 1. Portal 한 번에 실행
 
-저장소 루트에서:
+저장소 **루트**에서:
 
 ```bash
-# Linux 컨테이너 모드인지 확인한 뒤
+cd ~/path/to/msbuild-factory
+
 docker compose -f docker-compose.local.yml up --build
 ```
 
-성공하면:
+첫 빌드는 Node/Python 레이어 때문에 수 분 걸릴 수 있습니다. 로그에 `Uvicorn running on http://0.0.0.0:8000` 이 보이면 준비된 것입니다.
 
-- API/UI: http://127.0.0.1:8000/
-- health: http://127.0.0.1:8000/healthz
-- ready: http://127.0.0.1:8000/readyz
+브라우저에서:
 
-중지:
+| URL | 용도 |
+|-----|------|
+| http://127.0.0.1:8000/ | 포털 UI |
+| http://127.0.0.1:8000/healthz | 상태 |
+| http://127.0.0.1:8000/readyz | Ready |
+
+중지(다른 터미널 또는 `Ctrl+C` 후):
 
 ```bash
 docker compose -f docker-compose.local.yml down
 ```
 
-> 컨테이너 안에 SQLite를 씁니다. `down` 하면 DB는 사라집니다(검증용이라 문제 없음).
+> 컨테이너 내부 SQLite를 씁니다. `down` 하면 DB는 초기화됩니다(검증용 OK).
+
+백그라운드 실행을 원하면:
+
+```bash
+docker compose -f docker-compose.local.yml up --build -d
+docker compose -f docker-compose.local.yml logs -f portal
+```
 
 ---
 
-## 2. 브라우저로 시나리오 확인 (UI)
+## 2. UI로 시나리오 검증 (필수)
 
 1. http://127.0.0.1:8000/ 접속  
-2. Hot preset 하나 클릭 (예: **표준 .NET Framework 4.8**)  
+2. Hot preset 클릭 — 예: **표준 .NET Framework 4.8** 또는 **표준 .NET 8 Windows**  
 3. **1. Ensure image** 클릭  
-   - 이미 seed된 Hot이면 곧바로 **READY** + digest 표시  
-4. (선택) 프로젝트 정보 입력 후 **2. Start build**  
-   - `PORTAL_SIMULATE_WORKERS=true` 이면 자동으로 프로젝트 빌드까지 진행될 수 있음  
-5. Cold 조합을 고르면 (예: C++ v143 + MFC, exactReuse)  
-   - Ensure 후 잠시 CREATING → simulate가 READY로 만듦  
+   - Hot은 seed 이미지라 곧바로 **READY** + `digest` 가 보여야 함  
+4. (선택) 프로젝트 칸을 채운 뒤 **2. Start build**  
+   - `PORTAL_SIMULATE_WORKERS=true` 이라 빌드 상태가 자동으로 끝날 수 있음  
+5. Cold 조합 검증  
+   - Reuse mode를 `exactReuse`로 두고 C++ / MFC 등을 골라 Ensure  
+   - 잠시 `CREATING` 후 **READY** (로컬 simulate)  
    - 그다음 Start build 가능  
 
-이것이 시나리오의:
+통과 기준:
 
-- 빌드 툴 선택  
-- 이미지 있는지 검증  
-- 있으면 정보 반환 / 없으면 생성(시뮬) 후 정보 반환  
-
-에 해당합니다.
+- Hot: Ensure 즉시 READY + digest  
+- Cold: Ensure 후 READY + digest 반환  
+- READY 전 Start build 시 오류(이미지 미준비)가 나는 것도 정상  
 
 ---
 
-## 3. curl로 API만 확인 (선택)
+## 3. 터미널로 API 확인 (선택)
 
-### 3-A. Hot preset — 이미 있는 이미지
+Mac 기본 `curl` + `python3` 사용.
+
+### 3-A. Hot — 이미지 있음
 
 ```bash
 curl -s http://127.0.0.1:8000/api/v1/images/ensure \
@@ -117,15 +133,11 @@ curl -s http://127.0.0.1:8000/api/v1/images/ensure \
   }' | python3 -m json.tool
 ```
 
-기대한 결과:
-
-- `"ready": true`
-- `"image": { "digest": "sha256:preset-...", ... }`
+기대: `"ready": true`, `"image"."digest"` 존재.
 
 ### 3-B. Cold — 없으면 생성(시뮬) 후 READY
 
 ```bash
-# 1) ensure (CREATING 가능)
 curl -s http://127.0.0.1:8000/api/v1/images/ensure \
   -H 'Content-Type: application/json' \
   -d '{
@@ -140,34 +152,26 @@ curl -s http://127.0.0.1:8000/api/v1/images/ensure \
     }
   }' | tee /tmp/ensure.json | python3 -m json.tool
 
-# 2) profile hash 추출
-HASH=$(python3 -c "import json;print(json.load(open('/tmp/ensure.json'))['matchedProfileHash'])")
+HASH=$(python3 -c "import json; print(json.load(open('/tmp/ensure.json'))['matchedProfileHash'])")
 echo "HASH=$HASH"
 
-# 3) READY 될 때까지 폴링 (compose는 auto-simulate ON)
-for i in 1 2 3 4 5 6 7 8 9 10; do
+for i in $(seq 1 15); do
   curl -s "http://127.0.0.1:8000/api/v1/images/$HASH" | tee /tmp/img.json | python3 -m json.tool
   python3 -c "import json,sys; d=json.load(open('/tmp/img.json')); sys.exit(0 if d.get('ready') else 1)" && break
   sleep 1
 done
 ```
 
-기대한 결과:
+기대: 최종 `"ready": true`, digest가 `sha256:simulated-...` 형태.
 
-- 최종 `"ready": true`
-- `"image"."digest"` 가 `sha256:simulated-...` 형태
-
-> auto-simulate가 꺼져 있으면:
-> `curl -X POST http://127.0.0.1:8000/api/v1/images/$HASH/simulate`
-
-### 3-C. (선택) 프로젝트 빌드 시작
+### 3-C. (선택) 프로젝트 빌드 요청
 
 ```bash
-DIGEST=$(python3 -c "import json;print(json.load(open('/tmp/img.json'))['image']['digest'])")
+DIGEST=$(python3 -c "import json; print(json.load(open('/tmp/img.json'))['image']['digest'])")
 
 curl -s http://127.0.0.1:8000/api/v1/build-requests \
   -H 'Content-Type: application/json' \
-  -H "Idempotency-Key: demo-$(date +%s)" \
+  -H "Idempotency-Key: mac-demo-$(date +%s)" \
   -d "{
     \"project\": {
       \"repository\": \"DemoApp\",
@@ -188,38 +192,36 @@ curl -s http://127.0.0.1:8000/api/v1/build-requests \
   }" | python3 -m json.tool
 ```
 
-기대한 결과: `"status": "BUILD_QUEUED"` 또는 (auto-sim) `"SUCCEEDED"`
-
-READY 전에 빌드하면 `409` + `IMAGE_NOT_READY` 가 나와야 정상입니다.
+기대: `"status": "BUILD_QUEUED"` 또는 곧 `"SUCCEEDED"` (auto-sim).
 
 ---
 
-## 4. 자동 스모크 (서버 없이)
+## 4. 자동 테스트 (서버 없이)
 
-Portal 프로세스를 안 띄워도, 저장소만으로 회귀 확인:
+Portal 컨테이너를 안 띄워도, Mac에서 회귀 확인 가능합니다.
 
 ```bash
-# 의존성
 cd portal/backend
 python3 -m pip install -r requirements.txt
-
-# 단위/통합 테스트
 PYTHONPATH=. python3 -m pytest -q
 
-# cutover 스모크 (ensure → pin → build 포함)
 cd ../..
 bash portal/scripts/smoke-cutover.sh
 ```
 
-둘 다 통과하면 API 계약은 인터넷망에서 검증된 것입니다.
+둘 다 통과하면 API 계약은 검증된 상태입니다.
+
+> `python3` / `pip` 가 없으면:  
+> `xcode-select --install` 후, 필요 시 `brew install python`  
+> 또는 이 절은 건너뛰고 §1–2 UI 검증만 해도 됩니다.
 
 ---
 
-## 5. (대안) Docker 없이 호스트에서 실행
+## 5. (대안) Docker 없이 Mac 호스트 실행
 
-Docker Compose가 어려울 때만 사용합니다.
+Docker 빌드가 느릴 때만 사용합니다. Terminal **두 개**가 필요합니다.
 
-터미널 A — Backend:
+**터미널 A — API**
 
 ```bash
 cd portal/backend
@@ -227,10 +229,11 @@ python3 -m pip install -r requirements.txt
 export PORTAL_ALLOW_INSECURE_DEFAULTS=true
 export PORTAL_SIMULATE_WORKERS=true
 export PORTAL_DEFAULT_ACTOR_ROLES=operator,builder
-PYTHONPATH=. python3 -m uvicorn app.main:app --reload --port 8000
+export PYTHONPATH=.
+python3 -m uvicorn app.main:app --reload --port 8000
 ```
 
-터미널 B — Frontend (UI 핫리로드):
+**터미널 B — UI**
 
 ```bash
 cd portal/frontend
@@ -238,38 +241,38 @@ npm ci
 npm run dev
 ```
 
-- UI: Vite가 안내하는 주소 (보통 http://127.0.0.1:5173 , `/api` 프록시)
-- API: http://127.0.0.1:8000
+- UI: 터미널에 표시된 주소 (보통 http://127.0.0.1:5173 )  
+- API: http://127.0.0.1:8000  
+
+Node가 없으면: `brew install node` (Node 22 권장).
 
 ---
 
-## 6. 이 검증에서 “되는 것 / 안 되는 것”
+## 6. 이 Mac 검증에서 되는 것 / 안 되는 것
 
-| 항목 | 인터넷망 로컬 |
+| 항목 | Intel Mac 로컬 |
 |------|----------------|
 | 포털 UI / API | ✅ |
-| Hot 이미지 재사용(seed) | ✅ |
-| Cold ensure → READY(시뮬) | ✅ |
-| 이미지 정보(digest) 반환 | ✅ |
+| Hot 이미지 재사용 (seed) | ✅ |
+| Cold ensure → READY (simulation) | ✅ |
+| 이미지 digest 반환 | ✅ |
 | build-requests 핀 검증 | ✅ |
-| 실제 Windows Docker build | ❌ |
-| Nexus 실 push/pull | ❌ |
-| 폐쇄망 Jenkins 트리거 | ❌ (여기선 생략) |
-
-실 Factory/Nexus/Jenkins는 **폐쇄망 k9s 배포 후** 이어서 검증합니다.
+| 실제 Windows Server Core 이미지 빌드 | ❌ (폐쇄망 Factory) |
+| Nexus 실 push/pull | ❌ (폐쇄망) |
+| 폐쇄망 Jenkins 연동 | ❌ (폐쇄망에서 연결) |
 
 ---
 
-## 7. 문제 생기면
+## 7. Intel Mac 흔한 문제
 
-| 증상 | 확인 |
+| 증상 | 조치 |
 |------|------|
-| `no matching manifest for windows(10.0.20348)/amd64` | Docker가 Windows 컨테이너 모드임 → **Linux containers로 전환** (§0-1). Portal은 Linux 전용. |
-| 8000 포트 충돌 | `docker compose ... down` 후 재실행, 또는 다른 포트 매핑 |
-| UI는 뜨는데 API 실패 | `/healthz`, `/readyz` 확인 |
-| Ensure 후 영원히 CREATING | compose의 `PORTAL_SIMULATE_WORKERS=true` 인지 확인, 또는 `/images/{hash}/simulate` 수동 호출 |
-| Start build 409 | Ensure가 READY인지, 환경 바꾼 뒤 핀이 남아있지 않은지(UI는 환경 변경 시 핀 초기화) |
-| `npm ci` / build 실패 | Node 22+, lockfile 포함 여부 |
+| `Cannot connect to the Docker daemon` | Docker Desktop 실행, 고래 아이콘이  Idle/Running 인지 확인 |
+| 빌드 중 `npm ci` / 네트워크 실패 | 사내 프록시면 Docker Desktop → Settings → Resources / Proxies 설정 |
+| `port is already allocated` (8000) | `lsof -i :8000` 후 기존 프로세스 종료, 또는 compose 포트 변경 |
+| Ensure 후 계속 CREATING | compose에 `PORTAL_SIMULATE_WORKERS=true` 인지 확인. 수동: `curl -X POST http://127.0.0.1:8000/api/v1/images/<hash>/simulate` |
+| Start build 409 | Ensure가 READY인지 확인. UI에서 환경 바꾸면 핀이 초기화됨 → Ensure 다시 |
+| Apple Silicon(M1/M2)에서 이 문서를 연 경우 | `uname -m` 이 `arm64` → 별도 확인 필요. Intel(`x86_64`)만 이 문서 대상 |
 
 로그:
 
@@ -279,13 +282,29 @@ docker compose -f docker-compose.local.yml logs -f portal
 
 ---
 
-## 8. 다음 단계 (폐쇄망 이동 미리보기)
+## 8. 검증 체크리스트 (복사해서 사용)
 
-인터넷망 검증이 끝나면 USB로 옮길 후보:
+- [ ] `uname -m` → `x86_64`
+- [ ] `docker compose -f docker-compose.local.yml up --build` 성공
+- [ ] http://127.0.0.1:8000/healthz → `"status":"ok"` (또는 database true)
+- [ ] Hot Ensure → READY + digest
+- [ ] Cold Ensure → READY + digest (simulated)
+- [ ] (선택) `pytest` / `smoke-cutover.sh` 통과
 
-1. `docker save` 한 `msbuild-portal` 이미지 (및 postgres 등)
-2. 이 git 저장소 (또는 릴리즈 tar)
-3. `k8s/portal/*`, `k8s/postgres/*` 매니페스트 + 편집한 secret
+모두 체크되면 인터넷망 Portal 검증 완료 → USB로 폐쇄망 반입 준비로 넘어가면 됩니다.
 
-폐쇄망에서는 기존 Jenkins에 credentials/Job만 연결하고 Portal Deployment를 올리면 됩니다.  
-자세한 연동은 `jenkins/WIRING.md`, `k8s/portal/README.md` 참고.
+---
+
+## 9. 다음 단계 (폐쇄망 미리보기)
+
+Mac에서 검증이 끝나면 USB로 옮길 후보:
+
+1. Portal 이미지:  
+   `docker compose -f docker-compose.local.yml build` 후  
+   `docker save msbuild-factory-portal:latest -o msbuild-portal.tar`  
+   (이미지 이름은 `docker images` 로 확인)
+2. git 저장소 또는 릴리즈 tar  
+3. `k8s/portal/*`, `k8s/postgres/*` + 편집한 secret  
+
+폐쇄망에서는 기존 Jenkins에 credentials/Job 연결 + Portal/Postgres apply.  
+연동 상세: `jenkins/WIRING.md`, `k8s/portal/README.md`.
