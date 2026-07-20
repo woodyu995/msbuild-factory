@@ -234,11 +234,19 @@ cd D:\airgap-export
 
 #### A-5b. VS 2019 layout
 
+**반드시 최신 2019 Build Tools 부트스트랩퍼**를 받는다 (오래된 exe는 `Windows10SDK.19041`을 모름):
+
+```powershell
+cd D:\airgap-export
+# 공식 최신 채널 (vs/16 = VS 2019)
+Invoke-WebRequest -Uri "https://aka.ms/vs/16/release/vs_buildtools.exe" `
+  -OutFile ".\vs_BuildTools_2019.exe"
+```
+
 ```powershell
 mkdir D:\airgap-export\vs2019-16.11.54 -Force
 cd D:\airgap-export
 
-# 2019 Build Tools 부트스트랩퍼
 .\vs_BuildTools_2019.exe `
   --layout D:\airgap-export\vs2019-16.11.54 `
   --lang en-US `
@@ -251,6 +259,11 @@ cd D:\airgap-export
   --add Microsoft.VisualStudio.Component.Windows10SDK.19041 `
   --includeRecommended
 ```
+
+| 에러 | 원인 / 조치 |
+|------|-------------|
+| `Windows10SDK.19041` is not recognized | 부트스트랩퍼가 오래됨 → 위 `aka.ms/vs/16/release/vs_buildtools.exe`로 **다시 다운로드** 후 재실행 |
+| 그래도 SDK ID 실패 | 임시로 `Windows10SDK.18362` 사용 가능하나, Portal Catalog 허용값(`10.0.19041.0`)과 어긋남 → 부트스트랩퍼 갱신을 우선 |
 
 2019 Catalog 허용 범위 요약: netfx 4.6~4.8, C++ **v142**, WinSDK **10.0.19041.0**, features managed-desktop/mfc/atl (dotnet SDK 없음).
 
