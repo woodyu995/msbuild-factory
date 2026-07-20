@@ -252,7 +252,8 @@ def test_dockerfile_generation_unit():
     docker = generate_dockerfile(build_input, profile_hash="abcd" * 16)
     assert "Install-BuildEnvironment.cmd" in docker
     assert "COPY install-manifest.json" in docker
-    assert "COPY layout C:\\Layout" in docker
+    assert "COPY --from=layout" in docker
+    assert "COPY --from=installers" in docker
     assert "agent-base-ltsc2022@sha256:abc" in docker
     assert "company.build.profile-hash=\"abcdabcdabcd\"" in docker
     vs = generate_vsconfig(build_input)

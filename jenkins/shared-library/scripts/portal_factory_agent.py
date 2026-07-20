@@ -208,17 +208,33 @@ def cmd_build(args: argparse.Namespace) -> None:
         (arts.get("installManifest") or {}).get("visualStudio", {}).get("layoutRelease") or ""
     )
     layout_src = _resolve_layout_dir(layout_root, layout_release)
-    _link_or_copy_dir(layout_src, work / "layout")
+    if not layout_src.exists():
+        raise SystemExit(f"layout path missing: {layout_src}")
+
     installer_src = Path(installer_root)
-    if installer_src.exists():
+    if not installer_src.exists():
+        installer_src.mkdir(parents=True, exist_ok=True)
+        (installer_src / ".keep").write_text("", encoding="utf-8")
+
+    # Prefer Docker named build-contexts (reliable on Windows). Junctions in the
+    # default context are often invisible to `docker build` on Windows containers.
+    use_build_context = not _env_flag("FACTORY_EMBED_LAYOUT_IN_CONTEXT")
+    if not use_build_context:
+        _link_or_copy_dir(layout_src, work / "layout")
         _link_or_copy_dir(installer_src, work / "installers")
-    else:
-        (work / "installers").mkdir(parents=True, exist_ok=True)
-        (work / "installers" / ".keep").write_text("", encoding="utf-8")
 
     staging_tag = f'{arts["stagingRepository"]}:{arts["imageTag"]}'
     final_tag = f'{arts["finalRepository"]}:{arts["imageTag"]}'
     dockerfile = work / "Dockerfile"
+
+    # Ensure Dockerfile uses --from=layout when using build-context (fetch may be old).
+    df_text = dockerfile.read_text(encoding="utf-8")
+    if use_build_context and "COPY --from=layout" not in df_text:
+        df_text = df_text.replace("COPY layout C:\\Layout", "COPY --from=layout . C:\\Layout")
+        df_text = df_text.replace("COPY installers C:\\Installers", "COPY --from=installers . C:\\Installers")
+        if not df_text.lstrip().startswith("# syntax="):
+            df_text = "# syntax=docker/dockerfile:1.4\n" + df_text
+        dockerfile.write_text(df_text, encoding="utf-8")
 
     build_cmd = [
         "docker",
@@ -227,13 +243,32 @@ def cmd_build(args: argparse.Namespace) -> None:
         str(dockerfile),
         "-t",
         staging_tag,
-        str(work),
     ]
+    if use_build_context:
+        build_cmd.extend(
+            [
+                "--build-context",
+                f"layout={layout_src}",
+                "--build-context",
+                f"installers={installer_src}",
+            ]
+        )
+    build_cmd.append(str(work))
     env = os.environ.copy()
-    env["IMAGE_FACTORY_LAYOUT_ROOT"] = layout_root
-    env["IMAGE_FACTORY_INSTALLER_ROOT"] = installer_root
+    env["IMAGE_FACTORY_LAYOUT_ROOT"] = str(layout_src)
+    env["IMAGE_FACTORY_INSTALLER_ROOT"] = str(installer_src)
 
-    print(json.dumps({"ok": True, "phase": "docker-build", "cmd": build_cmd, "layoutSrc": str(layout_src)}))
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "phase": "docker-build",
+                "cmd": build_cmd,
+                "layoutSrc": str(layout_src),
+                "useBuildContext": use_build_context,
+            }
+        )
+    )
     built = subprocess.run(build_cmd, check=False, capture_output=True, text=True, env=env)
     if built.returncode != 0:
         raise SystemExit(f"docker build failed: {built.stderr or built.stdout}")
