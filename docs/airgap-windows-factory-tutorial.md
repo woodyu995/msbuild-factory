@@ -1,139 +1,166 @@
-# 폐쇄망 — 실제 Server Core + VS Build Tools 이미지 검증
+# 폐쇄망 튜토리얼 — Linux Docker + Windows Docker
 
-목표: 포털에서 환경을 고르면 **Windows Docker**가 실제 베이스 위에서  
-VS Build Tools를 설치한 이미지를 빌드하고, **Nexus 없이 로컬에 남긴 뒤** READY를 확인한다.
+폐쇄망에 **두 종류의 Docker 호스트**가 있다고 가정한다.
+
+| 호스트 | Docker | 역할 |
+|--------|--------|------|
+| **Linux** | Linux containers | Portal UI/API만 실행 |
+| **Windows** | **Windows containers** | Server Core + VS Build Tools 이미지 실빌드 |
 
 ```text
-[Linux] Portal (Ensure → CREATING + lease)
-            ↓ HMAC
-[Windows Factory] fetch → docker build (Server Core/agent-base + VS layout)
-            → 로컬 tag + docker save (Nexus push 없음)
-            → finalize → Portal READY
+[사용자 브라우저] ──→ [Linux Docker] Portal :8000
+                              │ Ensure → CREATING + leaseId
+                              │ HMAC (내부망)
+                              ▼
+                     [Windows Docker] Factory
+                         fetch → docker build → 로컬 저장
+                         finalize → Portal READY
 ```
 
-> Linux의 `PORTAL_LOCAL_FACTORY` stub(`FROM scratch`)로는 **이 목표를 달성할 수 없습니다.**  
-> Windows 컨테이너 호스트가 필요합니다.
+- Jenkins / Nexus / 로그인: **이 단계에서는 사용하지 않음**
+- Linux의 stub 빌드(`docker-compose.airgap-local.yml`, `FROM scratch`)는 **쓰지 않음**
+
+네트워크: Windows 호스트가 Linux Portal URL(`http://<linux-ip>:8000`)에 접근 가능해야 한다.
 
 ---
 
-## 0. 필요한 것
+## 역할 분리 (중요)
 
-| 구성 | 역할 |
-|------|------|
-| Linux Docker 호스트 | Portal만 기동 |
-| **Windows Server** + Docker (**Windows containers**) | 실제 이미지 빌드 |
-| USB 반입물 | 아래 표 |
+| 작업 | 어디서 |
+|------|--------|
+| Portal compose up | **Linux** |
+| 브라우저로 Ensure | 아무 PC → Linux:8000 |
+| `servercore` load / tag | **Windows** |
+| VS offline layout 두기 | **Windows** |
+| `portal_factory_agent.py` build | **Windows** |
+| `docker images`로 MSBuild 이미지 확인 | **Windows** |
+| READY 상태 확인 | Portal UI (Linux) |
 
-### USB / 반입물
-
-| 항목 | 설명 |
-|------|------|
-| `msbuild-portal.tar` | Portal 이미지 (인터넷망에서 빌드) |
-| `msbuild-factory-src.tgz` | 소스 (agent 스크립트 포함) |
-| **Windows base** | `mcr.microsoft.com/windows/servercore:ltsc2022` (또는 2019) tar |
-| **VS Build Tools offline layout** | `vs_setup.exe` + 패키지 (`vs2022-17.14.x` 등 Catalog `layoutRelease`와 일치) |
-| (선택) .NET SDK exe | `IMAGE_FACTORY_INSTALLER_ROOT` |
-
-인터넷망에서 base 받기 예:
-
-```bash
-# Windows 머신(인터넷)에서
-docker pull mcr.microsoft.com/windows/servercore:ltsc2022
-docker save mcr.microsoft.com/windows/servercore:ltsc2022 -o servercore-ltsc2022.tar
-```
-
-VS layout은 Microsoft 오프라인 레이아웃 생성 절차로 미리 만들어 USB에 넣습니다.
+Linux Docker에는 Windows Server Core 이미지를 올리지 않는다.
 
 ---
 
-## 1. 인터넷망 — Portal 이미지
+## A. 인터넷망에서 USB 만들기 (한 번)
+
+Linux 또는 Mac(Docker)에서 Portal 이미지:
 
 ```bash
 git checkout cursor/portal-mvp-implementation-03e9
+git pull
+
 docker compose -f docker-compose.local.yml build
 docker tag msbuild-factory-portal:latest msbuild-portal:airgap
 docker save msbuild-portal:airgap -o msbuild-portal.tar
 tar czf msbuild-factory-src.tgz --exclude .git --exclude local-images .
 ```
 
+Windows(인터넷, Windows containers)에서 base:
+
+```powershell
+docker pull mcr.microsoft.com/windows/servercore:ltsc2022
+docker save mcr.microsoft.com/windows/servercore:ltsc2022 -o servercore-ltsc2022.tar
+```
+
+VS Build Tools **offline layout**도 인터넷망에서 만들어 둔다  
+(Catalog `layoutRelease` 예: `vs2022-17.14.x`, 폴더 안에 `vs_setup.exe`).
+
+### USB에 넣을 목록
+
+| 파일/폴더 | 넣는 호스트 |
+|-----------|-------------|
+| `msbuild-portal.tar` | → Linux |
+| `msbuild-factory-src.tgz` | → Linux **와** Windows 둘 다 |
+| `servercore-ltsc2022.tar` | → Windows |
+| VS offline layout 폴더 | → Windows |
+| (선택) .NET SDK `.exe` | → Windows `installers\` |
+
 ---
 
-## 2. 폐쇄망 Linux — Portal 기동
+## B. 폐쇄망 Linux 호스트 — Portal
 
 ```bash
 docker load -i msbuild-portal.tar
-tar xzf msbuild-factory-src.tgz && cd msbuild-factory
+tar xzf msbuild-factory-src.tgz
+cd msbuild-factory
 
+# 실제 Windows factory 연동용 compose (stub 아님)
 docker compose -f docker-compose.airgap-windows.yml up -d
 curl -s http://127.0.0.1:8000/readyz
 ```
 
 - 로그인 없음  
-- Jenkins / Nexus 없음  
-- HMAC 기본값: `airgap-dev-hmac-change-me` (Windows agent와 동일해야 함)
+- HMAC: `airgap-dev-hmac-change-me` (Windows와 **반드시 동일**)  
+- Linux IP를 확인: `ip a` / `hostname -I` → 예 `10.0.0.10`
 
-브라우저: `http://<linux-host>:8000/`
+브라우저: `http://10.0.0.10:8000/`  
+(Windows·사용자 PC에서 Linux IP로 접속)
+
+Windows에서 연결 확인:
+
+```powershell
+curl http://10.0.0.10:8000/readyz
+```
 
 ---
 
-## 3. 폐쇄망 Windows — 베이스 준비
+## C. 폐쇄망 Windows 호스트 — Factory 준비
 
-Windows containers 모드:
+1. Docker가 **Windows containers** 모드인지 확인  
+2. 소스 압축 해제 (agent 스크립트용)  
+3. base load + Catalog가 기대하는 이름으로 tag  
+4. layout / installers 경로 준비  
+5. Python 3 설치
 
 ```powershell
 docker load -i servercore-ltsc2022.tar
-
-# Catalog가 기대하는 로컬 이름/태그 (MVP placeholder digest → tag 사용)
 docker tag mcr.microsoft.com/windows/servercore:ltsc2022 msbuild-agent-base:ltsc2022
-
 docker images msbuild-agent-base
+
+# 레이아웃 예 (vs_setup.exe 가 이 폴더 안에 있어야 함)
+# D:\vs-layouts\vs2022-17.14.x\vs_setup.exe
+# D:\installers\   (비어 있어도 폴더는 필요)
+
+tar xzf msbuild-factory-src.tgz -C C:\
+cd C:\msbuild-factory   # 실제 푼 경로에 맞게
 ```
 
-레이아웃/인스톨러 경로 예:
-
-```text
-D:\vs-layouts\vs2022-17.14.x\vs_setup.exe   (또는 D:\vs-layouts\vs_setup.exe)
-D:\installers\                               (비어 있어도 됨 — 폴더는 필요)
-```
-
-Python 3 + 이 저장소 소스(에이전트 스크립트)가 Windows에 있어야 합니다.
+환경 변수 (세션마다):
 
 ```powershell
-$env:PORTAL_URL = "http://<linux-host>:8000"
+$env:PORTAL_URL = "http://10.0.0.10:8000"          # Linux Portal
 $env:PORTAL_HMAC_SECRET = "airgap-dev-hmac-change-me"
-$env:IMAGE_FACTORY_LAYOUT_ROOT = "D:\vs-layouts\vs2022-17.14.x"   # vs_setup.exe 있는 폴더
+$env:IMAGE_FACTORY_LAYOUT_ROOT = "D:\vs-layouts\vs2022-17.14.x"
 $env:IMAGE_FACTORY_INSTALLER_ROOT = "D:\installers"
 $env:FACTORY_DRY_RUN = "0"
-$env:FACTORY_SKIP_PUSH = "1"                  # Nexus 없음
+$env:FACTORY_SKIP_PUSH = "1"                       # Nexus 아직 안 씀
 $env:FACTORY_DOCKER_SAVE_DIR = "D:\factory-images"
-$env:IMAGE_FACTORY_STRICT = "1"               # MSBuild 검증
+$env:IMAGE_FACTORY_STRICT = "1"
 ```
 
 ---
 
-## 4. 포털 Ensure → Windows에서 실빌드
+## D. 검증 시나리오 (양쪽 협력)
 
-### 4-1. UI
+### D-1. Linux Portal UI에서 Ensure
 
-1. Reuse mode = **exactReuse**  
-2. Cold 조합 (예: VS2022 + net48 + C++ v143 + WinSDK + MFC)  
-3. **Ensure image** → 상태 **CREATING** (자동으로 READY 되면 안 됨 — Windows agent가 해야 함)
+1. `http://<linux-ip>:8000/` 접속  
+2. Reuse mode = **exactReuse**  
+3. Cold 조합 예: VS 2022 + net48 + C++ v143 + WinSDK + MFC  
+4. **Ensure image**  
+5. 상태가 **CREATING**인지 확인 (여기서 멈추는 것이 정상 — Windows가 빌드해야 함)
 
-### 4-2. lease 확인
-
-Linux에서:
+UI에 나온 `profile` / hash와, 필요하면 Linux에서 lease 확인:
 
 ```bash
-# matchedProfileHash 는 UI 또는:
 curl -s http://127.0.0.1:8000/api/v1/images/<HASH>
-# factoryLeaseId 확인
+# factoryLeaseId 사용
 ```
 
-### 4-3. Windows agent (Jenkins 없이)
+### D-2. Windows에서 실빌드
 
 ```powershell
-cd C:\msbuild-factory   # 소스 푼 경로
-$HASH = "<matchedProfileHash>"
+cd C:\msbuild-factory
+$HASH = "<UI의 matchedProfileHash>"
 $LEASE = "<factoryLeaseId>"
 $WORK = "D:\factory-work\$HASH"
 
@@ -152,50 +179,65 @@ python .\jenkins\shared-library\scripts\portal_factory_agent.py finalize `
   --profile-hash $HASH --lease-id $LEASE --work-dir $WORK
 ```
 
-빌드 시간: VS offline 설치 포함 **수십 분 ~ 수 시간**, 디스크 **수백 GB** 여유 권장.
+- 빌드: VS 설치 포함 **수십 분 ~ 수 시간**  
+- 디스크: **수백 GB** 여유 권장  
+- Windows Docker가 `msbuild-agent-base:ltsc2022` 위에서 `vs_setup --noWeb` 실행
 
-### 4-4. 결과 확인 (Windows)
+### D-3. 결과 확인
+
+**Windows** (이미지가 있는 곳):
 
 ```powershell
 docker images msbuild-local/profile
 Get-ChildItem D:\factory-images
-
-# 이미지 안에서 MSBuild 확인 (예시)
 docker run --rm msbuild-local/profile:<tag> cmd /c where msbuild
 ```
 
-Portal UI는 **READY** + 실 digest (`sha256:dry-run-` / `simulated-` 아님).
+**Linux / 브라우저** (Portal):
+
+- 상태 **READY**  
+- digest가 `sha256:simulated-` / `dry-run-`이 **아님**  
+- 같은 환경으로 Ensure 다시 → 재사용 (Windows 빌드 재실행 없음)
 
 ---
 
-## 5. 성공 기준
+## E. 성공 체크리스트
 
-- [ ] Portal Ensure → CREATING  
-- [ ] Windows `docker build`가 `msbuild-agent-base:ltsc2022`에서 시작  
-- [ ] 레이아웃 `vs_setup.exe --noWeb`로 Build Tools 설치  
-- [ ] Validate에서 MSBuild 발견  
-- [ ] `FACTORY_SKIP_PUSH=1`로 로컬 tag (+ optional tar)  
-- [ ] finalize 후 Portal READY  
-
----
-
-## 6. 문제 해결
-
-| 증상 | 조치 |
-|------|------|
-| `FROM` pull 실패 | `docker images msbuild-agent-base` — tag 일치 여부 |
-| vs_setup 없음 | `IMAGE_FACTORY_LAYOUT_ROOT`에 exe 있는지 |
-| MSBuild validation 실패 | 레이아웃/workload(.vsconfig) / 디스크 / 로그 |
-| HMAC 401 | Portal `PORTAL_CALLBACK_HMAC_SECRET` = Windows `PORTAL_HMAC_SECRET` |
-| CREATING 고정 | Windows에서 fetch/build/finalize 실행했는지 |
-| Linux stub만 빌드됨 | `docker-compose.airgap-local.yml`이 아님 — **airgap-windows** 사용 |
+- [ ] Linux: Portal `/readyz` OK, Windows에서 URL 접속 가능  
+- [ ] Windows: `msbuild-agent-base:ltsc2022` 존재  
+- [ ] Windows: layout에 `vs_setup.exe` 존재  
+- [ ] Ensure → CREATING  
+- [ ] Windows build 성공 → 로컬 `msbuild-local/profile:…`  
+- [ ] finalize → Portal READY  
+- [ ] 컨테이너에서 `msbuild` 확인  
 
 ---
 
-## 다음에
+## F. 문제 해결
 
-- Nexus push: `FACTORY_SKIP_PUSH=0` + `NEXUS_*`  
-- Jenkins `msbuild-factory` 에이전트 라벨 연결  
-- k9s 배포  
+| 증상 | 어느 호스트 | 조치 |
+|------|-------------|------|
+| Portal 안 뜸 | Linux | `docker compose -f docker-compose.airgap-windows.yml logs` |
+| Windows→Portal 연결 실패 | 네트워크 | 방화벽, IP, `:8000` |
+| Ensure 후 바로 READY + tar 없음 | Linux | stub compose 쓰는지 확인 → **airgap-windows** 로 교체 |
+| CREATING 고정 | Windows | fetch/build/finalize 실행 여부 |
+| `FROM` 실패 | Windows | `docker images msbuild-agent-base` |
+| vs_setup 없음 | Windows | `IMAGE_FACTORY_LAYOUT_ROOT` |
+| HMAC 401 | 양쪽 | 시크릿 문자열 동일 여부 |
+| Linux에서 Windows 이미지 없음 | 정상 | 이미지는 **Windows Docker에만** 있음 |
 
-관련: `docs/factory-host-runbook.md`, `jenkins/WIRING.md`
+중지 (Linux):
+
+```bash
+docker compose -f docker-compose.airgap-windows.yml down
+```
+
+---
+
+## 다음에 (아직 아님)
+
+- Nexus push (`FACTORY_SKIP_PUSH=0`)  
+- Jenkins `msbuild-factory` 라벨로 agent 자동화  
+- k9s  
+
+관련: `docs/factory-host-runbook.md`
