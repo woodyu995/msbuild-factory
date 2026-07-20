@@ -49,7 +49,15 @@ Linux Docker에는 Windows Server Core 이미지를 올리지 않는다.
 | **Linux 또는 Intel Mac** + Docker (Linux containers) | Portal 이미지 tar + 소스 tgz |
 | **Windows** + Docker (**Windows containers**) | Server Core tar + (가능하면) VS layout |
 
-예상 USB 용량: Portal 수 GB + Server Core ~몇 GB + VS layout **수십 GB** → USB/외장 HDD **100GB+** 권장.
+Catalog 매핑 (반입물을 이 표에 맞출 것):
+
+| Portal VS | Windows base | Catalog `layoutRelease` | 폐쇄망 Docker tag |
+|-----------|--------------|-------------------------|-------------------|
+| **2019** | `servercore:ltsc2019` | `vs2019-16.11.54` | `msbuild-agent-base:ltsc2019` |
+| **2022** | `servercore:ltsc2022` | `vs2022-17.14.x` | `msbuild-agent-base:ltsc2022` |
+
+둘 다 검증하려면 base·layout을 **2019 + 2022 각각** USB에 넣는다.  
+예상 USB 용량: Portal 수 GB + Server Core×2 + layout×2 → **200GB+** 권장 (2022만이면 100GB+).
 
 작업용 폴더 예: `~/airgap-export/` (Linux/Mac), `D:\airgap-export\` (Windows).
 
@@ -154,41 +162,59 @@ ls -lh ~/airgap-export/msbuild-factory-src.tgz
 
 ### A-4. Windows Server Core 이미지 받기 (Windows)
 
-폐쇄망 Windows Docker가 `FROM`으로 쓸 **베이스**. Linux에 load하지 않는다.
+폐쇄망 Windows Docker가 `FROM`으로 쓸 **베이스**. Linux에 load하지 않는다.  
+**2019와 2022를 모두** 쓸 계획이면 둘 다 pull/save 한다.
 
 ```powershell
 mkdir D:\airgap-export -Force
 cd D:\airgap-export
 
 # Windows containers 모드에서
-docker pull mcr.microsoft.com/windows/servercore:ltsc2022
-docker images mcr.microsoft.com/windows/servercore:ltsc2022
 
-docker save mcr.microsoft.com/windows/servercore:ltsc2022 -o D:\airgap-export\servercore-ltsc2022.tar
-Get-Item D:\airgap-export\servercore-ltsc2022.tar | Format-List Name, Length
+# --- VS 2022 / ltsc2022 ---
+docker pull mcr.microsoft.com/windows/servercore:ltsc2022
+docker save mcr.microsoft.com/windows/servercore:ltsc2022 `
+  -o D:\airgap-export\servercore-ltsc2022.tar
+
+# --- VS 2019 / ltsc2019 ---
+docker pull mcr.microsoft.com/windows/servercore:ltsc2019
+docker save mcr.microsoft.com/windows/servercore:ltsc2019 `
+  -o D:\airgap-export\servercore-ltsc2019.tar
+
+Get-ChildItem D:\airgap-export\servercore-ltsc*.tar | Format-Table Name, Length
 ```
 
-- VS 2019 프로필을 쓰려면 **ltsc2019**도 같은 방식으로 추가 반입한다.  
-- 폐쇄망에서는 이걸 `msbuild-agent-base:ltsc2022`로 retag 한다 (B/C 단계).
+폐쇄망 Windows에서 retag (C 단계):
+
+| tar | retag |
+|-----|--------|
+| `servercore-ltsc2019.tar` | `msbuild-agent-base:ltsc2019` |
+| `servercore-ltsc2022.tar` | `msbuild-agent-base:ltsc2022` |
+
+호스트 OS 호환: 일반적으로 **ltsc2019 이미지 → WS2019 호스트**, **ltsc2022 이미지 → WS2022 호스트**.  
+한 Windows 호스트에서 둘 다 돌리려면 호스트/격리 모드가 허용하는지 미리 확인한다.
 
 ---
 
-### A-5. VS Build Tools offline layout 만들기 (Windows, 인터넷)
+### A-5. VS Build Tools offline layout (Windows, 인터넷)
 
-Catalog의 `layoutRelease`와 맞춘다. 현재 VS 2022 예: **`vs2022-17.14.x`**.
+Catalog `layoutRelease`와 **폴더 이름을 동일**하게 만든다.
 
-1. [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022) 부트스트랩퍼 다운로드  
-   (`vs_BuildTools.exe` 또는 `vs_setup.exe`로 저장)
-2. 포함할 workload는 포털에서 고를 조합을 덮어야 한다. 최소 예(Managed + C++ + MFC/ATL + WinSDK):
+| VS | 다운로드 | layout 폴더명 |
+|----|----------|----------------|
+| **2019** | [Build Tools 2019](https://visualstudio.microsoft.com/vs/older-downloads/) (Build Tools) | `vs2019-16.11.54` |
+| **2022** | [Build Tools 2022](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022) | `vs2022-17.14.x` |
+
+부트스트랩퍼(`vs_BuildTools.exe`)는 **연도별로 따로** 받는다. layout 폴더 안에 `vs_setup.exe` 또는 `vs_BuildTools.exe`가 있어야 한다.
+
+#### A-5a. VS 2022 layout
 
 ```powershell
 mkdir D:\airgap-export\vs2022-17.14.x -Force
 cd D:\airgap-export
 
-# 부트스트랩퍼 이름을 vs_setup.exe 로 맞춰 두면 폐쇄망 스크립트와 동일
-# (다운로드 파일명이 vs_BuildTools.exe 이면 rename)
-
-.\vs_BuildTools.exe `
+# 2022 부트스트랩퍼로 실행 (파일명은 다운로드명에 맞게)
+.\vs_BuildTools_2022.exe `
   --layout D:\airgap-export\vs2022-17.14.x `
   --lang en-US `
   --add Microsoft.VisualStudio.Workload.MSBuildTools `
@@ -201,22 +227,45 @@ cd D:\airgap-export
   --includeRecommended
 ```
 
-완료 후 확인:
+#### A-5b. VS 2019 layout
 
 ```powershell
-Get-ChildItem D:\airgap-export\vs2022-17.14.x\vs_setup.exe, `
-              D:\airgap-export\vs2022-17.14.x\vs_BuildTools.exe `
-              -ErrorAction SilentlyContinue
+mkdir D:\airgap-export\vs2019-16.11.54 -Force
+cd D:\airgap-export
 
-# 레이아웃 루트에 setup이 있어야 함 (하위만 있으면 폴더 구조를 맞춤)
-(Get-ChildItem D:\airgap-export\vs2022-17.14.x -Recurse -Filter "vs_*.exe" |
-  Select-Object -First 5 FullName)
+# 2019 부트스트랩퍼로 실행
+.\vs_BuildTools_2019.exe `
+  --layout D:\airgap-export\vs2019-16.11.54 `
+  --lang en-US `
+  --add Microsoft.VisualStudio.Workload.MSBuildTools `
+  --add Microsoft.VisualStudio.Workload.ManagedDesktopBuildTools `
+  --add Microsoft.VisualStudio.Workload.VCTools `
+  --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+  --add Microsoft.VisualStudio.Component.VC.MFC `
+  --add Microsoft.VisualStudio.Component.VC.ATL `
+  --add Microsoft.VisualStudio.Component.Windows10SDK.19041 `
+  --includeRecommended
 ```
 
-폐쇄망에서 `IMAGE_FACTORY_LAYOUT_ROOT`는 **setup exe가 있는 폴더**를 가리킨다.
+2019 Catalog 허용 범위 요약: netfx 4.6~4.8, C++ **v142**, WinSDK **10.0.19041.0**, features managed-desktop/mfc/atl (dotnet SDK 없음).
 
-- 용량 큼 (수십 GB). 레이아웃 생성이 끊기면 같은 명령으로 재개되는 경우가 많다.  
-- workload를 빼먹으면 폐쇄망 빌드 시 MSBuild/MFC validation에서 실패한다.
+#### A-5c. layout 확인
+
+```powershell
+foreach ($dir in @(
+  "D:\airgap-export\vs2019-16.11.54",
+  "D:\airgap-export\vs2022-17.14.x"
+)) {
+  Write-Host "=== $dir ==="
+  Get-ChildItem $dir -Filter "vs_*.exe" -ErrorAction SilentlyContinue |
+    Select-Object FullName
+}
+```
+
+폐쇄망 `IMAGE_FACTORY_LAYOUT_ROOT`는 **해당 연도 layout에서 setup exe가 있는 폴더**를 가리킨다.
+
+- 연도당 수십 GB. 끊기면 같은 `--layout` 명령으로 재개되는 경우가 많다.  
+- workload 누락 시 폐쇄망 MSBuild/MFC validation 실패.
 
 ---
 
