@@ -25,6 +25,16 @@ docker compose -f docker-compose.local.yml up --build
 # open http://127.0.0.1:8000/
 ```
 
+## Air-gap Docker verify (portal → image factory, no K8s)
+
+Follow **[docs/airgap-docker-image-factory-tutorial.md](../docs/airgap-docker-image-factory-tutorial.md)**.
+
+```bash
+# on closed-network Linux Docker host (after USB docker load)
+cp .env.airgap.example .env.airgap   # edit
+docker compose -f docker-compose.airgap.yml --env-file .env.airgap up -d
+```
+
 ## Backend
 
 ```bash
