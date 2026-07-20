@@ -172,6 +172,7 @@ def ensure_image(
 
 def get_image_status(session: Session, profile_hash: str) -> dict[str, Any]:
     import json
+    from pathlib import Path
 
     from app.config import get_settings
     from app.services.local_factory import local_artifact_paths
@@ -184,20 +185,29 @@ def get_image_status(session: Session, profile_hash: str) -> dict[str, Any]:
     local_tar_path = None
     local_tar_file = None
     settings = get_settings()
-    if settings.local_factory and row.image_tag:
-        arts = local_artifact_paths(settings, row.image_tag)
-        local_image_ref = arts["localImageRef"]
-        local_tar_path = arts["localTarPath"]
-        local_tar_file = arts["localTarFile"]
-    elif row.validation_result_json:
+
+    meta: dict[str, Any] | None = None
+    if row.validation_result_json:
         try:
-            meta = json.loads(row.validation_result_json)
-            if isinstance(meta, dict) and meta.get("mode") == "local-factory":
-                local_image_ref = meta.get("localImageRef")
-                local_tar_path = meta.get("localTarPath")
-                local_tar_file = meta.get("localTarFile")
+            parsed = json.loads(row.validation_result_json)
+            if isinstance(parsed, dict):
+                meta = parsed
         except json.JSONDecodeError:
-            pass
+            meta = None
+
+    locally_built = bool(meta and meta.get("mode") == "local-factory")
+    if locally_built:
+        local_image_ref = meta.get("localImageRef")
+        local_tar_path = meta.get("localTarPath")
+        local_tar_file = meta.get("localTarFile")
+    elif settings.local_factory and row.image_tag and row.image_repository == settings.local_image_repo:
+        # Only advertise paths when the tar was actually written (not seeded hot presets).
+        arts = local_artifact_paths(settings, row.image_tag)
+        if Path(arts["localTarPath"]).is_file():
+            local_image_ref = arts["localImageRef"]
+            local_tar_path = arts["localTarPath"]
+            local_tar_file = arts["localTarFile"]
+
     return {
         "profileHash": row.profile_hash,
         "imageStatus": row.status,

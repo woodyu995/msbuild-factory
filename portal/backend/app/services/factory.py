@@ -379,6 +379,9 @@ def wake_waiters_for_image(
     failure_message: str | None = None,
 ) -> list[str]:
     """Transition Exact waiters / creators to next state. Returns affected request ids."""
+    from app.config import get_settings
+
+    local_factory = bool(get_settings().local_factory)
     waiters = session.scalars(
         select(BuildRequest).where(
             BuildRequest.requested_profile_hash == image.profile_hash,
@@ -390,15 +393,41 @@ def wake_waiters_for_image(
     affected: list[str] = []
     for request in waiters:
         if success:
-            queue_project_build(
-                session,
-                request,
-                image,
-                match_type="CREATED" if request.match_type == "CREATED" else "EXACT",
-            )
-            # keep CREATED if it owned the factory run
-            if request.match_type not in {"CREATED", "EXACT"}:
-                request.match_type = "EXACT"
+            match_type = "CREATED" if request.match_type == "CREATED" else "EXACT"
+            if local_factory:
+                # Local verify has no Jenkins project-build job — pin image only.
+                request.matched_profile_hash = image.profile_hash
+                request.match_type = match_type
+                request.image_digest = image.image_digest
+                request.status = "BUILD_QUEUED"
+                request.error_code = None
+                request.error_message = None
+                request.finished_at = None
+                request.jenkins_job_name = None
+                request.jenkins_queue_id = None
+                image.last_used_at = utcnow()
+                image.updated_at = utcnow()
+                append_event(
+                    session,
+                    request.id,
+                    "BUILD_QUEUED",
+                    "Image READY (local factory; project build not started)",
+                    {
+                        "matchType": match_type,
+                        "matchedProfileHash": image.profile_hash,
+                        "imageDigest": image.image_digest,
+                        "localFactory": True,
+                    },
+                )
+            else:
+                queue_project_build(
+                    session,
+                    request,
+                    image,
+                    match_type=match_type,
+                )
+                if request.match_type not in {"CREATED", "EXACT"}:
+                    request.match_type = "EXACT"
         else:
             request.status = "IMAGE_BUILD_FAILED"
             request.error_code = "IMAGE_BUILD_FAILED"

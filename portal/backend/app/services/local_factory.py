@@ -113,6 +113,21 @@ def local_artifact_paths(settings: Settings, image_tag: str) -> dict[str, str]:
     }
 
 
+def _mark_failed(session: Session, profile_hash: str, lease_id: str | None, message: str) -> None:
+    if not lease_id:
+        return
+    try:
+        apply_image_status_callback(
+            session,
+            profile_hash=profile_hash,
+            lease_id=lease_id,
+            status="FAILED",
+            message=message,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("failed to mark local factory FAILED for %s", profile_hash)
+
+
 def run_local_factory(
     session: Session,
     catalog: Catalog,
@@ -126,118 +141,127 @@ def run_local_factory(
         raise LookupError("image not found")
     if image.status == "READY":
         arts = local_artifact_paths(settings, image.image_tag)
+        # Only claim tar artifacts when the file actually exists (or metadata says so).
+        if Path(arts["localTarPath"]).is_file():
+            return {
+                "ok": True,
+                "alreadyReady": True,
+                "profileHash": profile_hash,
+                "imageDigest": image.image_digest,
+                **arts,
+            }
         return {
             "ok": True,
             "alreadyReady": True,
             "profileHash": profile_hash,
             "imageDigest": image.image_digest,
-            **arts,
         }
     if image.status not in {"CREATING", "VALIDATING", "FAILED"}:
         raise ValueError(f"cannot run local factory from status={image.status}")
     if not image.lease_id:
         raise ValueError("missing leaseId for local factory")
 
-    profile = session.scalar(select(BuildProfile).where(BuildProfile.profile_hash == profile_hash))
-    if profile is None:
-        raise LocalFactoryError(f"profile not found: {profile_hash}")
-    build_input = json.loads(profile.normalized_profile_json)
-    artifacts = build_factory_artifacts(build_input, profile_hash)
-    tag = artifacts["imageTag"]
-    repo_tag = f"{settings.local_image_repo}:{tag}"
-    out_dir = Path(settings.local_images_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    tar_path = out_dir / f"{tag}.tar"
-
-    apply_image_status_callback(
-        session,
-        profile_hash=profile_hash,
-        lease_id=image.lease_id,
-        status="VALIDATING",
-        message="[local-factory] building stub image",
-    )
-    image = get_active_image(session, profile_hash)
-    assert image is not None and image.lease_id
-
-    work = Path(tempfile.mkdtemp(prefix="portal-local-factory-"))
+    lease_id = image.lease_id
     try:
-        (work / "install-manifest.json").write_text(
-            json.dumps(generate_install_manifest(build_input), indent=2),
-            encoding="utf-8",
-        )
-        (work / "profile.vsconfig").write_text(
-            json.dumps(generate_vsconfig(build_input), indent=2),
-            encoding="utf-8",
-        )
-        (work / "build-input.json").write_text(
-            json.dumps(build_input, indent=2, ensure_ascii=False, sort_keys=True),
-            encoding="utf-8",
-        )
-        (work / "Dockerfile").write_text(
-            _stub_dockerfile(profile_hash=profile_hash, tag=tag),
-            encoding="utf-8",
-        )
+        profile = session.scalar(select(BuildProfile).where(BuildProfile.profile_hash == profile_hash))
+        if profile is None:
+            raise LocalFactoryError(f"profile not found: {profile_hash}")
+        build_input = json.loads(profile.normalized_profile_json)
+        artifacts = build_factory_artifacts(build_input, profile_hash)
+        tag = artifacts["imageTag"]
+        repo_tag = f"{settings.local_image_repo}:{tag}"
+        out_dir = Path(settings.local_images_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        tar_path = out_dir / f"{tag}.tar"
 
-        _run(["docker", "build", "-t", repo_tag, "."], cwd=work)
-        digest = _run(["docker", "image", "inspect", "--format", "{{.Id}}", repo_tag])
-        if not digest.startswith("sha256:"):
-            digest = f"sha256:{digest}" if digest else f"sha256:local-{profile_hash[:24]}"
-
-        if tar_path.exists():
-            tar_path.unlink()
-        _run(["docker", "save", "-o", str(tar_path), repo_tag])
-
-        readme = out_dir / "README.txt"
-        if not readme.exists():
-            readme.write_text(
-                "Local verify images (no Nexus).\n"
-                "Load: docker load -i <tag>.tar\n"
-                "List: docker images msbuild-local\n"
-                "Inspect labels: docker image inspect <ref>\n",
-                encoding="utf-8",
-            )
-    except LocalFactoryError as exc:
         apply_image_status_callback(
             session,
             profile_hash=profile_hash,
-            lease_id=image.lease_id,
-            status="FAILED",
-            message=f"[local-factory] {exc}",
+            lease_id=lease_id,
+            status="VALIDATING",
+            message="[local-factory] building stub image",
         )
-        raise
-    finally:
-        shutil.rmtree(work, ignore_errors=True)
+        image = get_active_image(session, profile_hash)
+        assert image is not None and image.lease_id
+        lease_id = image.lease_id
 
-    capability = _capability_for_profile(session, profile_hash)
-    arts = local_artifact_paths(settings, tag)
-    row, affected = apply_image_status_callback(
-        session,
-        profile_hash=profile_hash,
-        lease_id=image.lease_id,
-        status="READY",
-        image_digest=digest,
-        capability_profile=capability,
-        message=json.dumps(
+        work = Path(tempfile.mkdtemp(prefix="portal-local-factory-"))
+        try:
+            (work / "install-manifest.json").write_text(
+                json.dumps(generate_install_manifest(build_input), indent=2),
+                encoding="utf-8",
+            )
+            (work / "profile.vsconfig").write_text(
+                json.dumps(generate_vsconfig(build_input), indent=2),
+                encoding="utf-8",
+            )
+            (work / "build-input.json").write_text(
+                json.dumps(build_input, indent=2, ensure_ascii=False, sort_keys=True),
+                encoding="utf-8",
+            )
+            (work / "Dockerfile").write_text(
+                _stub_dockerfile(profile_hash=profile_hash, tag=tag),
+                encoding="utf-8",
+            )
+
+            _run(["docker", "build", "-t", repo_tag, "."], cwd=work)
+            digest = _run(["docker", "image", "inspect", "--format", "{{.Id}}", repo_tag])
+            if not digest.startswith("sha256:"):
+                digest = f"sha256:{digest}" if digest else f"sha256:local-{profile_hash[:24]}"
+
+            if tar_path.exists():
+                tar_path.unlink()
+            _run(["docker", "save", "-o", str(tar_path), repo_tag])
+
+            readme = out_dir / "README.txt"
+            if not readme.exists():
+                readme.write_text(
+                    "Local verify images (no Nexus).\n"
+                    "Load: docker load -i <tag>.tar\n"
+                    "List: docker images msbuild-local\n"
+                    "Inspect labels: docker image inspect <ref>\n",
+                    encoding="utf-8",
+                )
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+        capability = _capability_for_profile(session, profile_hash)
+        arts = local_artifact_paths(settings, tag)
+        row, affected = apply_image_status_callback(
+            session,
+            profile_hash=profile_hash,
+            lease_id=lease_id,
+            status="READY",
+            image_digest=digest,
+            capability_profile=capability,
+            message="[local-factory] stub image built and saved (no Nexus push)",
+        )
+        row.image_repository = settings.local_image_repo
+        row.image_tag = tag
+        row.hot = False
+        row.validation_result_json = json.dumps(
             {
                 "mode": "local-factory",
                 "message": "[local-factory] stub image built and saved (no Nexus push)",
                 **arts,
             },
             ensure_ascii=False,
-        ),
-    )
-    row.image_repository = settings.local_image_repo
-    row.image_tag = tag
-    row.hot = False
-    session.flush()
+        )
+        session.flush()
 
-    logger.info("local factory READY %s digest=%s tar=%s", repo_tag, digest, tar_path)
-    return {
-        "ok": True,
-        "alreadyReady": False,
-        "profileHash": profile_hash,
-        "imageDigest": row.image_digest,
-        "affectedRequestIds": affected,
-        "capabilityProfile": capability,
-        **arts,
-    }
+        logger.info("local factory READY %s digest=%s tar=%s", repo_tag, digest, tar_path)
+        return {
+            "ok": True,
+            "alreadyReady": False,
+            "profileHash": profile_hash,
+            "imageDigest": row.image_digest,
+            "affectedRequestIds": affected,
+            "capabilityProfile": capability,
+            **arts,
+        }
+    except LocalFactoryError as exc:
+        _mark_failed(session, profile_hash, lease_id, f"[local-factory] {exc}")
+        raise
+    except Exception as exc:  # noqa: BLE001
+        _mark_failed(session, profile_hash, lease_id, f"[local-factory] {exc}")
+        raise LocalFactoryError(str(exc)) from exc
