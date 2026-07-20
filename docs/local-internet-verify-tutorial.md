@@ -264,6 +264,7 @@ npm run dev
 
 | 증상 | 확인 |
 |------|------|
+| `no matching manifest for windows(10.0.20348)/amd64` | Docker가 Windows 컨테이너 모드임 → **Linux containers로 전환** (§0-1). Portal은 Linux 전용. |
 | 8000 포트 충돌 | `docker compose ... down` 후 재실행, 또는 다른 포트 매핑 |
 | UI는 뜨는데 API 실패 | `/healthz`, `/readyz` 확인 |
 | Ensure 후 영원히 CREATING | compose의 `PORTAL_SIMULATE_WORKERS=true` 인지 확인, 또는 `/images/{hash}/simulate` 수동 호출 |
