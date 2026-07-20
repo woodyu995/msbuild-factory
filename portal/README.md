@@ -15,21 +15,26 @@ Implements the revised design control plane and a local end-to-end simulation pa
 - Optional real Jenkins HTTP trigger (`PORTAL_JENKINS_*`)
 - Minimal React UI
 
-## Local step-by-step verify (no login / Jenkins / Nexus)
+## Local / air-gap step verify (no login / Jenkins / Nexus)
 
-Follow **[docs/local-verify-tutorial.md](../docs/local-verify-tutorial.md)**.
+- **폐쇄망 (이미지 빌드까지):** **[docs/airgap-local-verify-tutorial.md](../docs/airgap-local-verify-tutorial.md)**
+- 인터넷망 바로 확인: **[docs/local-verify-tutorial.md](../docs/local-verify-tutorial.md)**
 
 ```bash
-# from repo root — Docker Desktop running
-docker compose -f docker-compose.local.yml up --build
-# open http://127.0.0.1:8000/ → Ensure image → check ./local-images/*.tar
+# internet: build + USB
+docker compose -f docker-compose.local.yml build
+docker tag msbuild-factory-portal:latest msbuild-portal:airgap
+docker save msbuild-portal:airgap -o msbuild-portal.tar
+
+# closed network:
+docker load -i msbuild-portal.tar
+docker compose -f docker-compose.airgap-local.yml up -d
+# open http://<host>:8000/ → Ensure → ./local-images/*.tar
 ```
 
-`PORTAL_LOCAL_FACTORY=true` builds a local stub image and `docker save`s it under `./local-images/`.
+## Air-gap + Jenkins + Nexus (later stage)
 
-## Air-gap / Nexus (later stage)
-
-Follow **[docs/airgap-docker-image-factory-tutorial.md](../docs/airgap-docker-image-factory-tutorial.md)** after local verify.
+Follow **[docs/airgap-docker-image-factory-tutorial.md](../docs/airgap-docker-image-factory-tutorial.md)** after the local-factory verify.
 
 ```bash
 # on closed-network Linux Docker host (after USB docker load)

@@ -1,5 +1,11 @@
-# 폐쇄망 Docker 검증 튜토리얼  
-## 포털 환경 설정 → 이미지 생성(Nexus)까지 (K8s 불필요)
+# 폐쇄망 Docker 검증 튜토리얼 (이후 단계: Jenkins + Nexus)
+
+> **지금 단계**(로그인/Nexus 없이 로컬 이미지 빌드만):  
+> → **[airgap-local-verify-tutorial.md](./airgap-local-verify-tutorial.md)**
+
+아래는 Jenkins Factory + Nexus push까지 연결할 **다음 단계**용입니다.
+
+---
 
 목표: 폐쇄망에서 **Kubernetes 없이** Docker로 Portal을 띄우고,  
 사용자 포털에서 빌드 환경을 고른 뒤 **실제(또는 dry-run) 이미지 생성**까지 확인한다.
