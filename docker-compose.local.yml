@@ -1,0 +1,24 @@
+# Internet-side local verify (Docker only, no K8s / Jenkins / Windows required)
+# Usage: docker compose -f docker-compose.local.yml up --build
+services:
+  portal:
+    build:
+      context: .
+      dockerfile: portal/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      PORTAL_ALLOW_INSECURE_DEFAULTS: "true"
+      PORTAL_SIMULATE_WORKERS: "true"
+      PORTAL_DEFAULT_ACTOR_ROLES: "operator,builder"
+      PORTAL_REQUIRE_AUTH: "false"
+      PORTAL_GIT_RESOLVE_MODE: "placeholder"
+      # SQLite inside the container (ephemeral). Fine for verify.
+      PORTAL_DATABASE_URL: "sqlite:////tmp/portal-local.db"
+      PORTAL_REGISTRY_HOST: "nexus.company.io"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz')"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s

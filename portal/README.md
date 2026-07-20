@@ -15,6 +15,16 @@ Implements the revised design control plane and a local end-to-end simulation pa
 - Optional real Jenkins HTTP trigger (`PORTAL_JENKINS_*`)
 - Minimal React UI
 
+## Internet-side quick verify (Docker only)
+
+Follow **[docs/local-internet-verify-tutorial.md](../docs/local-internet-verify-tutorial.md)**.
+
+```bash
+# from repo root
+docker compose -f docker-compose.local.yml up --build
+# open http://127.0.0.1:8000/
+```
+
 ## Backend
 
 ```bash
