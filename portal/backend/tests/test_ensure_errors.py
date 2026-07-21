@@ -62,6 +62,34 @@ def test_ensure_factory_busy_returns_503(tmp_path):
         assert again.json()["factoryLeaseId"]
 
 
+def test_ensure_same_profile_refreshes_lease_ttl(tmp_path):
+    from datetime import timedelta
+
+    from app.db.models import utcnow
+
+    with _client(tmp_path) as client:
+        first = client.post("/api/v1/images/ensure", json={"environment": COLD_A})
+        assert first.status_code == 200
+        body = first.json()
+        lease = body["factoryLeaseId"]
+        hash_a = body["matchedProfileHash"]
+        assert lease
+        assert body.get("leaseExpiresAt")
+
+        session = client.app.state.session_factory()
+        image = session.query(BuildImage).filter_by(profile_hash=hash_a).one()
+        image.lease_expires_at = utcnow() - timedelta(minutes=30)
+        session.commit()
+        session.close()
+
+        again = client.post("/api/v1/images/ensure", json={"environment": COLD_A})
+        assert again.status_code == 200, again.text
+        assert again.json()["matchedProfileHash"] == hash_a
+        assert again.json()["factoryLeaseId"] == lease
+        # Wall-clock must be in the future after Ensure refresh.
+        assert again.json()["leaseExpiresAt"] > utcnow().isoformat()
+
+
 def test_ensure_frees_slot_after_expired_lease_reconcile(tmp_path):
     from datetime import timedelta
 

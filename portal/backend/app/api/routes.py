@@ -340,6 +340,7 @@ def ensure_image_endpoint(
         image=image,
         windowsBase=data["windowsBase"],
         factoryLeaseId=data["factoryLeaseId"],
+        leaseExpiresAt=data.get("leaseExpiresAt"),
         errorCode=data["errorCode"],
         errorMessage=data["errorMessage"],
         ready=data["ready"],

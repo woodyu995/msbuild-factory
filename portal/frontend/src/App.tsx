@@ -48,6 +48,7 @@ type EnsureResult = {
   errorMessage?: string;
   image?: { repository: string; tag: string; digest: string };
   factoryLeaseId?: string;
+  leaseExpiresAt?: string;
   localImageRef?: string;
   localTarPath?: string;
   localTarFile?: string;
@@ -220,6 +221,7 @@ export default function App() {
                   ready: data.ready,
                   image: data.image,
                   factoryLeaseId: data.factoryLeaseId,
+                  leaseExpiresAt: data.leaseExpiresAt,
                   matchedProfileHash: data.profileHash,
                   localImageRef: data.localImageRef,
                   localTarPath: data.localTarPath,
@@ -620,6 +622,18 @@ export default function App() {
               {ensureResult.matchedProfileHash && (
                 <div>
                   profile: <span className="mono">{ensureResult.matchedProfileHash}</span>
+                </div>
+              )}
+              {ensureResult.factoryLeaseId && (
+                <div>
+                  factoryLeaseId:{" "}
+                  <span className="mono">{ensureResult.factoryLeaseId}</span>
+                  {ensureResult.leaseExpiresAt ? (
+                    <>
+                      {" "}
+                      (expires <span className="mono">{ensureResult.leaseExpiresAt}</span>)
+                    </>
+                  ) : null}
                 </div>
               )}
               {ensureResult.image && (

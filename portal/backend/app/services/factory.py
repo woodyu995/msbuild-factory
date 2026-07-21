@@ -162,9 +162,9 @@ def start_or_join_factory(
     if existing and existing.status == "READY":
         return existing, "READY"
     if existing and existing.status in {"CREATING", "VALIDATING"}:
-        # Soft-renew so a long-running factory host can keep the same leaseId.
-        expires = _aware(existing.lease_expires_at)
-        if existing.lease_id and (expires is None or expires <= utcnow()):
+        # Always refresh TTL on Ensure/join so operators can re-arm a lease after reboot
+        # without changing profileHash (hash is deterministic; lease wall-clock is not).
+        if existing.lease_id:
             existing.lease_expires_at = utcnow() + timedelta(minutes=_lease_ttl_minutes(catalog))
             existing.updated_at = utcnow()
             session.flush()
@@ -177,8 +177,7 @@ def start_or_join_factory(
     if existing and existing.status == "READY":
         return existing, "READY"
     if existing and existing.status in {"CREATING", "VALIDATING"}:
-        expires = _aware(existing.lease_expires_at)
-        if existing.lease_id and (expires is None or expires <= utcnow()):
+        if existing.lease_id:
             existing.lease_expires_at = utcnow() + timedelta(minutes=_lease_ttl_minutes(catalog))
             existing.updated_at = utcnow()
             session.flush()

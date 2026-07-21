@@ -33,6 +33,7 @@ class EnsureImageResult:
     image: dict[str, str] | None
     windows_base: str | None
     factory_lease_id: str | None
+    lease_expires_at: str | None = None
     error_code: str | None = None
     error_message: str | None = None
     factory_phase: str | None = None  # CREATING | WAITING | READY | None
@@ -51,6 +52,7 @@ class EnsureImageResult:
             "image": self.image,
             "windowsBase": self.windows_base,
             "factoryLeaseId": self.factory_lease_id,
+            "leaseExpiresAt": self.lease_expires_at,
             "errorCode": self.error_code,
             "errorMessage": self.error_message,
             "ready": self.image_status in ready_statuses and self.image is not None,
@@ -118,6 +120,7 @@ def ensure_image(
             image=ref if _digest_usable(ref.get("digest")) else None,
             windows_base=resolved.windows_base,
             factory_lease_id=None,
+            lease_expires_at=None,
             factory_phase="READY",
         )
 
@@ -148,6 +151,7 @@ def ensure_image(
             image=_image_ref(image) if _digest_usable(image.image_digest) else None,
             windows_base=image.windows_base,
             factory_lease_id=None,
+            lease_expires_at=None,
             factory_phase="READY",
         )
 
@@ -166,6 +170,9 @@ def ensure_image(
         image=None,
         windows_base=image.windows_base,
         factory_lease_id=image.lease_id,
+        lease_expires_at=(
+            image.lease_expires_at.isoformat() if image.lease_expires_at else None
+        ),
         factory_phase=phase,
     )
 

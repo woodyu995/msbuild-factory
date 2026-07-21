@@ -83,6 +83,7 @@ class EnsureImageResponse(BaseModel):
     image: ImageRef | None = None
     windowsBase: str | None = None
     factoryLeaseId: str | None = None
+    leaseExpiresAt: str | None = None
     errorCode: str | None = None
     errorMessage: str | None = None
     ready: bool = False
