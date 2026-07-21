@@ -446,12 +446,45 @@ curl -s http://127.0.0.1:8000/api/v1/images/<HASH>
 # factoryLeaseId 사용
 ```
 
+### D-1b. 만료 lease 즉시 복구 (재부팅 후)
+
+`profile` hash는 그대로인데 `leaseExpiresAt`만 과거이면, **셸의 옛 `$LEASE`로는 fetch/build가 거절**된다.
+
+**최신 Portal** (권장): UI Ensure 또는
+
+```bash
+curl -s -X POST "http://127.0.0.1:8000/api/v1/images/<HASH>/rearm-lease"
+# → 새 factoryLeaseId + 미래 leaseExpiresAt
+```
+
+**구 Portal 이미지** (Ensure 해도 expires가 안 움직임): Linux에서 expire reconcile 후 Ensure
+
+```bash
+# HMAC = compose의 PORTAL_CALLBACK_HMAC_SECRET (기본 airgap-dev-hmac-change-me)
+python3 - <<'PY'
+import hashlib, hmac, json, time, urllib.request
+secret = "airgap-dev-hmac-change-me"
+body = b"{}"
+ts = str(int(time.time()))
+sig = hmac.new(secret.encode(), (ts.encode() + b"." + body), hashlib.sha256).hexdigest()
+req = urllib.request.Request(
+    "http://127.0.0.1:8000/internal/v1/reconcile/leases",
+    data=body,
+    headers={"Content-Type": "application/json", "X-Timestamp": ts, "X-Signature": sig},
+    method="POST",
+)
+print(urllib.request.urlopen(req).read().decode())
+PY
+```
+
+그다음 UI에서 **같은 옵션 Ensure** → **새** `factoryLeaseId`를 `$LEASE`에 넣고 Windows 진행.
+
 ### D-2. Windows에서 실빌드
 
 ```powershell
 cd C:\msbuild-factory
 $HASH = "<UI의 matchedProfileHash>"
-$LEASE = "<factoryLeaseId>"
+$LEASE = "<Ensure/rearm 직후의 factoryLeaseId>"   # 재부팅 전 값 재사용 금지
 $WORK = "D:\factory-work\$HASH"
 
 python .\jenkins\shared-library\scripts\portal_factory_agent.py fetch `
@@ -525,6 +558,7 @@ docker run --rm msbuild-local/profile:<tag> cmd /c where msbuild
 | `unknown flag: --build-context` | Windows | Docker가 구버전. **최신 `portal_factory_agent.py`** 로 교체 후 build 재실행 — 자동으로 layout을 work 디렉터리에 robocopy (수십 GB·시간 소요). 강제: `$env:FACTORY_EMBED_LAYOUT_IN_CONTEXT=1` |
 | `lease expired` | 양쪽 | 빌드가 lease TTL(~2h, airgap compose는 **12h**)보다 김. **Portal 이미지/compose 갱신** 후 Ensure(동일 조합)로 lease 연장, 또는 Windows에서 `heartbeat`/`finalize` 재시도(동일 leaseId + 상태가 아직 CREATING이면 soft-renew). reconcile로 FAILED가 됐으면 Ensure → **새 lease**로 finalize (`result.json` 있으면 빌드 재실행 불필요). 최신 agent는 build 중 10분마다 heartbeat |
 | `factory slots full` / `FACTORY_BUSY` | Linux UI | 동시 CREATING은 **1개**. 이전 Ensure가 아직 CREATING이면 다른 조합 Ensure가 거절됨. **같은 환경**으로 Ensure → `factoryLeaseId` 받아서 이어서 build/finalize. 포기하려면 Windows에서 `fail`로 슬롯 해제(아래). lease가 이미 만료됐으면 Portal이 Ensure 시 자동 reconcile |
+| Ensure 후에도 `leaseExpiresAt`이 과거 · leaseId 동일 | Linux | **구 Portal 이미지**일 가능성 큼. 아래 “만료 lease 즉시 복구” 또는 Portal 이미지 재빌드/재기동. 최신 Portal은 Ensure 시 만료 lease를 **새 leaseId**로 교체하고 TTL을 미래로 민다 |
 | `result.json missing` | Windows | build가 실패한 것. build 성공 후에만 finalize |
 | `COPY failed: layout` / junction | Windows | 위와 동일 — embed 경로 사용 (에이전트 자동) |
 | `FROM` 실패 | Windows | `docker images msbuild-agent-base` |

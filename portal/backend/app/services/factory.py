@@ -63,6 +63,22 @@ def _aware(dt: Any) -> Any:
     return dt
 
 
+def _rearm_inflight_lease(image: BuildImage, catalog: Catalog) -> None:
+    """Refresh CREATING/VALIDATING lease TTL; mint a new leaseId when wall-clock lapsed.
+
+    Profile hash stays the same; operators must copy the (possibly new) factoryLeaseId
+    after Ensure. Old Portal builds that skip this leave leaseExpiresAt in the past.
+    """
+    now = utcnow()
+    expires = _aware(image.lease_expires_at)
+    expired = expires is None or expires <= now
+    if expired or not image.lease_id:
+        image.lease_id = f"factory-{uuid.uuid4().hex[:10]}"
+        image.lease_owner = image.lease_id
+    image.lease_expires_at = now + timedelta(minutes=_lease_ttl_minutes(catalog))
+    image.updated_at = now
+
+
 def reclaim_or_require_lease(
     image: BuildImage,
     lease_id: str,
@@ -162,12 +178,8 @@ def start_or_join_factory(
     if existing and existing.status == "READY":
         return existing, "READY"
     if existing and existing.status in {"CREATING", "VALIDATING"}:
-        # Always refresh TTL on Ensure/join so operators can re-arm a lease after reboot
-        # without changing profileHash (hash is deterministic; lease wall-clock is not).
-        if existing.lease_id:
-            existing.lease_expires_at = utcnow() + timedelta(minutes=_lease_ttl_minutes(catalog))
-            existing.updated_at = utcnow()
-            session.flush()
+        _rearm_inflight_lease(existing, catalog)
+        session.flush()
         return existing, "WAITING"
     if existing and existing.status == "QUARANTINED":
         return existing, "QUARANTINED"
@@ -177,10 +189,8 @@ def start_or_join_factory(
     if existing and existing.status == "READY":
         return existing, "READY"
     if existing and existing.status in {"CREATING", "VALIDATING"}:
-        if existing.lease_id:
-            existing.lease_expires_at = utcnow() + timedelta(minutes=_lease_ttl_minutes(catalog))
-            existing.updated_at = utcnow()
-            session.flush()
+        _rearm_inflight_lease(existing, catalog)
+        session.flush()
         return existing, "WAITING"
     if existing and existing.status == "QUARANTINED":
         return existing, "QUARANTINED"

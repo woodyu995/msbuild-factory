@@ -376,6 +376,47 @@ def image_status_endpoint(
     )
 
 
+@router.post("/api/v1/images/{profile_hash}/rearm-lease", response_model=ImageStatusResponse)
+def rearm_factory_lease_endpoint(
+    profile_hash: str,
+    request: Request,
+    session: SessionDep,
+    actor: Annotated[object, Depends(actor_from_headers)],
+):
+    """Operator helper: mint/refresh factory lease while image is still CREATING.
+
+    Use after reboot when leaseExpiresAt is in the past and Ensure alone (old Portal)
+    did not move the TTL. Does not change profileHash.
+    """
+    from app.services.factory import _rearm_inflight_lease, get_active_image
+
+    catalog = get_catalog(request)
+    image = get_active_image(session, profile_hash, for_update=True)
+    if image is None:
+        raise HTTPException(status_code=404, detail="image not found")
+    if image.status not in {"CREATING", "VALIDATING"}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"image status is {image.status}; only CREATING/VALIDATING can rearm",
+        )
+    _rearm_inflight_lease(image, catalog)
+    session.flush()
+    data = get_image_status(session, profile_hash)
+    image_ref = ImageRef(**data["image"]) if data.get("image") else None
+    return ImageStatusResponse(
+        profileHash=data["profileHash"],
+        imageStatus=data["imageStatus"],
+        ready=data["ready"],
+        image=image_ref,
+        windowsBase=data["windowsBase"],
+        factoryLeaseId=data["factoryLeaseId"],
+        leaseExpiresAt=data["leaseExpiresAt"],
+        localImageRef=data.get("localImageRef"),
+        localTarPath=data.get("localTarPath"),
+        localTarFile=data.get("localTarFile"),
+    )
+
+
 @router.post("/api/v1/images/{profile_hash}/simulate")
 def simulate_image_factory_from_api(
     profile_hash: str,
