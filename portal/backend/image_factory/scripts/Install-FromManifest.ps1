@@ -50,27 +50,41 @@ if ($env:FACTORY_SKIP_VS_INSTALL -eq "1") {
     ($vsconfigObj | ConvertTo-Json -Depth 8) | Set-Content -Path $config -Encoding UTF8
   }
 
-  # Server Core / offline: import layout certificates or vs_installer.opc fails with 5003.
+  # Server Core / offline: without roots + without CRL reachability, vs_installer.opc
+  # fails with exit 5003 InvalidCertificate even after a naive Import-Certificate.
   $certDir = Join-Path $layoutRoot "certificates"
   if (Test-Path $certDir) {
-    Write-Host "Importing offline layout certificates from" $certDir
-    Get-ChildItem -Path $certDir -Include *.cer, *.crt -Recurse -ErrorAction SilentlyContinue |
+    Write-Host "Importing offline layout certificates via certutil from" $certDir
+    Get-ChildItem -Path (Join-Path $certDir "*") -Include *.cer, *.crt -File -ErrorAction SilentlyContinue |
       ForEach-Object {
-        Write-Host "  cert:" $_.Name
-        try {
-          Import-Certificate -FilePath $_.FullName -CertStoreLocation "Cert:\LocalMachine\Root" | Out-Null
-        } catch {
-          Write-Host "  Root import warning:" $_.Exception.Message
-        }
-        try {
-          Import-Certificate -FilePath $_.FullName -CertStoreLocation "Cert:\LocalMachine\CA" | Out-Null
-        } catch {
-          Write-Host "  CA import warning:" $_.Exception.Message
-        }
+        Write-Host "  certutil Root:" $_.Name
+        & certutil.exe -addstore -f "Root" $_.FullName | Out-Host
+        Write-Host "  certutil CA:" $_.Name
+        & certutil.exe -addstore -f "CA" $_.FullName | Out-Host
       }
   } else {
     Write-Host "WARNING: no certificates folder under layout - offline install may fail with exit 5003"
   }
+
+  # Offline containers cannot reach Microsoft CRL/OCSP; disable revocation checks for setup.
+  Write-Host "Disabling Authenticode revocation checks for offline VS setup"
+  $softPubPaths = @(
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WinTrust\Trust Providers\Software Publishing",
+    "HKCU:\Software\Microsoft\Windows\CurrentVersion\WinTrust\Trust Providers\Software Publishing"
+  )
+  foreach ($p in $softPubPaths) {
+    if (-not (Test-Path $p)) {
+      New-Item -Path $p -Force | Out-Null
+    }
+    # 0x23e00 = WTPF_IGNOREREVOKATION | WTPF_OFFLINEOKNOPERF | typical offline flags
+    New-ItemProperty -Path $p -Name "State" -PropertyType DWord -Value 0x23e00 -Force | Out-Null
+  }
+  $authRoot = "HKLM:\SOFTWARE\Policies\Microsoft\SystemCertificates\AuthRoot"
+  if (-not (Test-Path $authRoot)) {
+    New-Item -Path $authRoot -Force | Out-Null
+  }
+  New-ItemProperty -Path $authRoot -Name "DisableRootAutoUpdate" -PropertyType DWord -Value 1 -Force | Out-Null
+  New-ItemProperty -Path $authRoot -Name "EnableDisallowedPublishersAutoUpdate" -PropertyType DWord -Value 0 -Force | Out-Null
 
   Write-Host "Running" $setup
   Write-Host "vsconfig:"
