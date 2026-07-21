@@ -322,8 +322,14 @@ def cmd_build(args: argparse.Namespace) -> None:
         # Copy shared install scripts into build context if present beside this repo layout.
         scripts_src = Path(__file__).resolve().parents[3] / "portal" / "backend" / "image_factory" / "scripts"
         scripts_dst = work / "scripts"
-        if scripts_src.exists() and not scripts_dst.exists():
+        if scripts_src.exists():
+            if scripts_dst.exists():
+                shutil.rmtree(scripts_dst)
             shutil.copytree(scripts_src, scripts_dst)
+        elif not scripts_dst.exists():
+            raise SystemExit(
+                f"install scripts missing: expected {scripts_src} or {scripts_dst}"
+            )
 
         layout_release = str(
             (arts.get("installManifest") or {}).get("visualStudio", {}).get("layoutRelease") or ""
