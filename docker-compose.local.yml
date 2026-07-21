@@ -1,0 +1,33 @@
+# Step-by-step local verify (no login, no Jenkins, no Nexus)
+# Usage (repo root):
+#   docker compose -f docker-compose.local.yml up --build
+# Open http://127.0.0.1:8000/ → pick tools → Ensure image
+# Built stub images land in ./local-images/*.tar and docker images msbuild-local
+services:
+  portal:
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: portal/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      PORTAL_ALLOW_INSECURE_DEFAULTS: "true"
+      PORTAL_LOCAL_FACTORY: "true"
+      PORTAL_SIMULATE_WORKERS: "false"
+      PORTAL_REQUIRE_AUTH: "false"
+      PORTAL_DEFAULT_ACTOR_ROLES: "operator,builder"
+      PORTAL_GIT_RESOLVE_MODE: "placeholder"
+      PORTAL_DATABASE_URL: "sqlite:////tmp/portal-local.db"
+      PORTAL_LOCAL_IMAGES_DIR: "/var/portal-local-images"
+      PORTAL_LOCAL_IMAGE_REPO: "msbuild-local"
+      PORTAL_REGISTRY_HOST: "local"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./local-images:/var/portal-local-images
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz')"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 25s

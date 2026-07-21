@@ -191,6 +191,7 @@ def options(
         "estimatedImageBuildMinutes": catalog.estimated_minutes,
         "mvpFactoryEnabled": is_factory_enabled(catalog, settings),
         "simulateWorkers": settings.simulate_workers,
+        "localFactory": settings.local_factory,
         "requireAuth": settings.require_auth,
     }
 
@@ -290,6 +291,7 @@ def ensure_image_endpoint(
                 "code": "FACTORY_BUSY",
                 "message": str(exc),
                 "retryable": True,
+                "blocking": getattr(exc, "blocking", []) or [],
             },
         ) from exc
     except ImageQuarantined as exc:
@@ -317,6 +319,15 @@ def ensure_image_endpoint(
     image = None
     if data.get("image"):
         image = ImageRef(**data["image"])
+    local_image_ref = local_tar_path = local_tar_file = None
+    if settings.local_factory and data.get("matchedProfileHash"):
+        try:
+            status = get_image_status(session, data["matchedProfileHash"])
+            local_image_ref = status.get("localImageRef")
+            local_tar_path = status.get("localTarPath")
+            local_tar_file = status.get("localTarFile")
+        except LookupError:
+            pass
     return EnsureImageResponse(
         requestedProfileHash=data["requestedProfileHash"],
         matchedProfileHash=data["matchedProfileHash"],
@@ -329,9 +340,13 @@ def ensure_image_endpoint(
         image=image,
         windowsBase=data["windowsBase"],
         factoryLeaseId=data["factoryLeaseId"],
+        leaseExpiresAt=data.get("leaseExpiresAt"),
         errorCode=data["errorCode"],
         errorMessage=data["errorMessage"],
         ready=data["ready"],
+        localImageRef=local_image_ref,
+        localTarPath=local_tar_path,
+        localTarFile=local_tar_file,
     )
 
 
@@ -355,6 +370,50 @@ def image_status_endpoint(
         windowsBase=data["windowsBase"],
         factoryLeaseId=data["factoryLeaseId"],
         leaseExpiresAt=data["leaseExpiresAt"],
+        localImageRef=data.get("localImageRef"),
+        localTarPath=data.get("localTarPath"),
+        localTarFile=data.get("localTarFile"),
+    )
+
+
+@router.post("/api/v1/images/{profile_hash}/rearm-lease", response_model=ImageStatusResponse)
+def rearm_factory_lease_endpoint(
+    profile_hash: str,
+    request: Request,
+    session: SessionDep,
+    actor: Annotated[object, Depends(actor_from_headers)],
+):
+    """Operator helper: mint/refresh factory lease while image is still CREATING.
+
+    Use after reboot when leaseExpiresAt is in the past and Ensure alone (old Portal)
+    did not move the TTL. Does not change profileHash.
+    """
+    from app.services.factory import _rearm_inflight_lease, get_active_image
+
+    catalog = get_catalog(request)
+    image = get_active_image(session, profile_hash, for_update=True)
+    if image is None:
+        raise HTTPException(status_code=404, detail="image not found")
+    if image.status not in {"CREATING", "VALIDATING"}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"image status is {image.status}; only CREATING/VALIDATING can rearm",
+        )
+    _rearm_inflight_lease(image, catalog)
+    session.flush()
+    data = get_image_status(session, profile_hash)
+    image_ref = ImageRef(**data["image"]) if data.get("image") else None
+    return ImageStatusResponse(
+        profileHash=data["profileHash"],
+        imageStatus=data["imageStatus"],
+        ready=data["ready"],
+        image=image_ref,
+        windowsBase=data["windowsBase"],
+        factoryLeaseId=data["factoryLeaseId"],
+        leaseExpiresAt=data["leaseExpiresAt"],
+        localImageRef=data.get("localImageRef"),
+        localTarPath=data.get("localTarPath"),
+        localTarFile=data.get("localTarFile"),
     )
 
 

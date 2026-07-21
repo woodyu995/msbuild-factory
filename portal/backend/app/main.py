@@ -84,6 +84,7 @@ def create_app(database_url: str | None = None, catalog_path: Path | None = None
             "status": status,
             "database": db_ok,
             "simulateWorkers": settings.simulate_workers,
+            "localFactory": settings.local_factory,
             "jenkinsConfigured": bool(settings.jenkins_url and settings.jenkins_api_token),
             "insecureDefaults": settings.allow_insecure_defaults and settings.is_default_hmac_secret,
             "gitResolveMode": settings.git_resolve_mode,
@@ -91,13 +92,19 @@ def create_app(database_url: str | None = None, catalog_path: Path | None = None
             "registryHost": reg.host,
             "registryPushHost": reg.push_host,
             "registryFinal": reg.final_image,
+            # Air-gap operators: if leaseRearm is missing, the running image is too old.
+            "apiFeatures": ["leaseRearm", "ensureLeaseRefresh", "factoryLeaseMinutes"],
+            "factoryLeaseMinutes": settings.factory_lease_minutes,
         }
 
     @app.get("/readyz")
     def readyz():
         with app.state.session_factory() as session:
             session.execute(text("SELECT 1"))
-        return {"status": "ready"}
+        return {
+            "status": "ready",
+            "apiFeatures": ["leaseRearm", "ensureLeaseRefresh", "factoryLeaseMinutes"],
+        }
 
     # Optional static UI (baked into container image)
     static_dir = Path(__file__).resolve().parents[1] / "static"

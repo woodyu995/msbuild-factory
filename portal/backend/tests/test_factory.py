@@ -251,6 +251,19 @@ def test_dockerfile_generation_unit():
     }
     docker = generate_dockerfile(build_input, profile_hash="abcd" * 16)
     assert "Install-BuildEnvironment.cmd" in docker
+    assert "COPY install-manifest.json" in docker
+    assert "COPY --from=layout" in docker
+    assert "COPY --from=installers" in docker
+    assert "agent-base-ltsc2022@sha256:abc" in docker
     assert "company.build.profile-hash=\"abcdabcdabcd\"" in docker
     vs = generate_vsconfig(build_input)
     assert "Microsoft.Component.MSBuild" in vs["components"]
+
+    mvp = dict(build_input)
+    mvp["agentBase"] = {
+        "image": "msbuild-agent-base",
+        "digest": "sha256:agent-base-ltsc2022-mvp0001",
+    }
+    mvp_docker = generate_dockerfile(mvp, profile_hash="abcd" * 16)
+    assert "msbuild-agent-base:ltsc2022" in mvp_docker
+    assert "@sha256:agent-base" not in mvp_docker

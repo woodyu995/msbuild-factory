@@ -15,6 +15,34 @@ Implements the revised design control plane and a local end-to-end simulation pa
 - Optional real Jenkins HTTP trigger (`PORTAL_JENKINS_*`)
 - Minimal React UI
 
+## Local / air-gap verify
+
+- **실제 Server Core + VS Build Tools (폐쇄망):** **[docs/airgap-windows-factory-tutorial.md](../docs/airgap-windows-factory-tutorial.md)**
+- stub만 (`FROM scratch`): **[docs/airgap-local-verify-tutorial.md](../docs/airgap-local-verify-tutorial.md)**
+- 개요: **[docs/local-verify-tutorial.md](../docs/local-verify-tutorial.md)**
+
+```bash
+# internet: build + USB
+docker compose -f docker-compose.local.yml build
+docker tag msbuild-factory-portal:latest msbuild-portal:airgap
+docker save msbuild-portal:airgap -o msbuild-portal.tar
+
+# closed network:
+docker load -i msbuild-portal.tar
+docker compose -f docker-compose.airgap-local.yml up -d
+# open http://<host>:8000/ → Ensure → ./local-images/*.tar
+```
+
+## Air-gap + Jenkins + Nexus (later stage)
+
+Follow **[docs/airgap-docker-image-factory-tutorial.md](../docs/airgap-docker-image-factory-tutorial.md)** after the local-factory verify.
+
+```bash
+# on closed-network Linux Docker host (after USB docker load)
+cp .env.airgap.example .env.airgap   # edit
+docker compose -f docker-compose.airgap.yml --env-file .env.airgap up -d
+```
+
 ## Backend
 
 ```bash
@@ -44,8 +72,10 @@ bash ../scripts/smoke-cutover.sh
 | `PORTAL_REQUIRE_AUTH` | Require `Authorization: Bearer …` |
 | `PORTAL_API_TOKENS` | `name:token:role1\|role2,…` |
 | `PORTAL_DEFAULT_ACTOR_ROLES` | Default when auth off (default `builder`; use `operator` for local Simulate UI) |
-| `PORTAL_SIMULATE_WORKERS` | Local auto-advance only |
-| `PORTAL_JENKINS_*` | Real Jenkins trigger |
+| `PORTAL_SIMULATE_WORKERS` | Fake READY digests (no Docker) |
+| `PORTAL_LOCAL_FACTORY` | Real local `docker build` + `docker save` (no Nexus) |
+| `PORTAL_LOCAL_IMAGES_DIR` | Tar output dir (default `/var/portal-local-images`) |
+| `PORTAL_JENKINS_*` | Real Jenkins trigger (later) |
 | `PORTAL_DATABASE_URL` | Postgres URL (`postgresql+psycopg://…`) in cluster |
 | `PORTAL_REGISTRY_HOST` | Nexus docker connector host:port |
 | `PORTAL_REGISTRY_FINAL_REPO` | e.g. `build/msbuild-profile` |

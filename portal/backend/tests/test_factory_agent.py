@@ -42,6 +42,23 @@ def _load_agent():
     return mod
 
 
+def test_rewrite_dockerfile_copy_mode_roundtrip():
+    mod = _load_agent()
+    named = (
+        "# syntax=docker/dockerfile:1.4\n"
+        "FROM base\n"
+        "COPY --from=layout . C:\\Layout\n"
+        "COPY --from=installers . C:\\Installers\n"
+    )
+    embedded = mod._rewrite_dockerfile_copy_mode(named, use_build_context=False)
+    assert "COPY layout C:\\Layout" in embedded
+    assert "COPY installers C:\\Installers" in embedded
+    assert "COPY --from=layout" not in embedded
+    back = mod._rewrite_dockerfile_copy_mode(embedded, use_build_context=True)
+    assert "COPY --from=layout . C:\\Layout" in back
+    assert "COPY --from=installers . C:\\Installers" in back
+
+
 def test_factory_agent_dry_run_against_portal(tmp_path, monkeypatch):
     monkeypatch.setenv("PORTAL_SIMULATE_WORKERS", "false")
     get_settings.cache_clear()

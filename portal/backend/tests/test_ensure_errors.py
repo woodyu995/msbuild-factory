@@ -45,12 +45,76 @@ def test_ensure_factory_busy_returns_503(tmp_path):
         a = client.post("/api/v1/images/ensure", json={"environment": COLD_A})
         assert a.status_code == 200
         assert a.json()["imageStatus"] == "CREATING"
+        hash_a = a.json()["matchedProfileHash"]
 
         busy = client.post("/api/v1/images/ensure", json={"environment": COLD_B})
         assert busy.status_code == 503
         detail = busy.json()["detail"]
         assert detail["code"] == "FACTORY_BUSY"
         assert detail["retryable"] is True
+        assert detail["blocking"]
+        assert detail["blocking"][0]["profileHash"] == hash_a
+
+        # Same profile joins the in-flight slot instead of 503.
+        again = client.post("/api/v1/images/ensure", json={"environment": COLD_A})
+        assert again.status_code == 200
+        assert again.json()["imageStatus"] == "CREATING"
+        assert again.json()["factoryLeaseId"]
+
+
+def test_ensure_same_profile_refreshes_lease_ttl(tmp_path):
+    from datetime import timedelta
+
+    from app.db.models import utcnow
+
+    with _client(tmp_path) as client:
+        first = client.post("/api/v1/images/ensure", json={"environment": COLD_A})
+        assert first.status_code == 200
+        body = first.json()
+        lease = body["factoryLeaseId"]
+        hash_a = body["matchedProfileHash"]
+        assert lease
+        assert body.get("leaseExpiresAt")
+
+        session = client.app.state.session_factory()
+        image = session.query(BuildImage).filter_by(profile_hash=hash_a).one()
+        image.lease_expires_at = utcnow() - timedelta(minutes=30)
+        session.commit()
+        session.close()
+
+        again = client.post("/api/v1/images/ensure", json={"environment": COLD_A})
+        assert again.status_code == 200, again.text
+        assert again.json()["matchedProfileHash"] == hash_a
+        # Expired lease is replaced so operators notice they must copy a new id.
+        assert again.json()["factoryLeaseId"] != lease
+        assert again.json()["leaseExpiresAt"] > utcnow().isoformat()
+
+        rearm = client.post(f"/api/v1/images/{hash_a}/rearm-lease")
+        assert rearm.status_code == 200, rearm.text
+        assert rearm.json()["factoryLeaseId"]
+        assert rearm.json()["leaseExpiresAt"] > utcnow().isoformat()
+
+
+def test_ensure_frees_slot_after_expired_lease_reconcile(tmp_path):
+    from datetime import timedelta
+
+    from app.db.models import utcnow
+
+    with _client(tmp_path) as client:
+        a = client.post("/api/v1/images/ensure", json={"environment": COLD_A})
+        assert a.status_code == 200
+        hash_a = a.json()["matchedProfileHash"]
+
+        session = client.app.state.session_factory()
+        image = session.query(BuildImage).filter_by(profile_hash=hash_a).one()
+        image.lease_expires_at = utcnow() - timedelta(minutes=1)
+        session.commit()
+        session.close()
+
+        # Different profile can start after expired holder is reconciled.
+        b = client.post("/api/v1/images/ensure", json={"environment": COLD_B})
+        assert b.status_code == 200, b.text
+        assert b.json()["imageStatus"] == "CREATING"
 
 
 def test_ensure_factory_disabled_returns_400(tmp_path, monkeypatch):

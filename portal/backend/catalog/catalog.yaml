@@ -1,11 +1,15 @@
 catalogVersion: "2026.07"
 
 agentBases:
+  # tag: used when digest is an MVP placeholder (air-gap local load/retag).
+  # Prod should pin real registry digests (image@sha256:...).
   ltsc2019:
-    image: registry.internal/build/agent-base-ltsc2019
+    image: msbuild-agent-base
+    tag: ltsc2019
     digest: "sha256:agent-base-ltsc2019-mvp0001"
   ltsc2022:
-    image: registry.internal/build/agent-base-ltsc2022
+    image: msbuild-agent-base
+    tag: ltsc2022
     digest: "sha256:agent-base-ltsc2022-mvp0001"
 
 baseImages:
@@ -33,7 +37,8 @@ visualStudio:
       msbuild: Microsoft.Component.MSBuild
       managed-desktop: Microsoft.VisualStudio.Workload.ManagedDesktopBuildTools
       cpp-v142: Microsoft.VisualStudio.Component.VC.Tools.x86.x64
-      mfc: Microsoft.VisualStudio.Component.VC.MFC
+      # Build Tools SKU uses ATLMFC (VC.MFC is IDE-only and fails --layout)
+      mfc: Microsoft.VisualStudio.Component.VC.ATLMFC
       atl: Microsoft.VisualStudio.Component.VC.ATL
       windows-sdk-19041: Microsoft.VisualStudio.Component.Windows10SDK.19041
 
@@ -52,7 +57,7 @@ visualStudio:
       managed-desktop: Microsoft.VisualStudio.Workload.ManagedDesktopBuildTools
       cpp-v142: Microsoft.VisualStudio.Component.VC.Tools.x86.x64
       cpp-v143: Microsoft.VisualStudio.Component.VC.Tools.x86.x64
-      mfc: Microsoft.VisualStudio.Component.VC.MFC
+      mfc: Microsoft.VisualStudio.Component.VC.ATLMFC
       atl: Microsoft.VisualStudio.Component.VC.ATL
       cpp-cli: Microsoft.VisualStudio.Component.VC.CLI.Support
       windows-sdk-19041: Microsoft.VisualStudio.Component.Windows10SDK.19041

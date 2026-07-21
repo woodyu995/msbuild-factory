@@ -31,6 +31,7 @@ type Options = {
   }>;
   mvpFactoryEnabled: boolean;
   simulateWorkers?: boolean;
+  localFactory?: boolean;
   requireAuth?: boolean;
 };
 
@@ -47,6 +48,10 @@ type EnsureResult = {
   errorMessage?: string;
   image?: { repository: string; tag: string; digest: string };
   factoryLeaseId?: string;
+  leaseExpiresAt?: string;
+  localImageRef?: string;
+  localTarPath?: string;
+  localTarFile?: string;
 };
 
 type BuildRequest = {
@@ -83,9 +88,14 @@ function loadToken(): string {
   );
 }
 
-function apiHeaders(extra: Record<string, string> = {}, token: string): HeadersInit {
+/** Only send Bearer when auth is required — stale tokens break local/open mode. */
+function apiHeaders(
+  extra: Record<string, string> = {},
+  token: string,
+  requireAuth: boolean,
+): HeadersInit {
   const headers: Record<string, string> = { ...extra };
-  if (token) {
+  if (requireAuth && token) {
     headers.Authorization = `Bearer ${token}`;
   } else {
     headers["X-Actor"] = "portal-ui";
@@ -98,7 +108,19 @@ function detailMessage(data: unknown): string {
     const detail = (data as { detail: unknown }).detail;
     if (typeof detail === "string") return detail;
     if (detail && typeof detail === "object" && "message" in detail) {
-      return String((detail as { message: unknown }).message);
+      const d = detail as {
+        message: unknown;
+        code?: unknown;
+        blocking?: Array<{ profileHash?: string; leaseId?: string }>;
+      };
+      let msg = String(d.message);
+      if (d.code === "FACTORY_BUSY" && d.blocking?.length) {
+        const b = d.blocking[0];
+        msg += ` (blocking profile: ${b.profileHash || "?"}`;
+        if (b.leaseId) msg += `, lease: ${b.leaseId}`;
+        msg += ")";
+      }
+      return msg;
     }
     return JSON.stringify(detail);
   }
@@ -121,6 +143,9 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const localMode = Boolean(options?.localFactory);
+  const requireAuth = Boolean(options?.requireAuth);
+
   function updateEnv(next: Environment) {
     setEnv(next);
     setEnsureResult(null);
@@ -129,12 +154,41 @@ export default function App() {
   }
 
   useEffect(() => {
-    localStorage.setItem(TOKEN_KEY, apiToken);
-  }, [apiToken]);
+    if (requireAuth) {
+      localStorage.setItem(TOKEN_KEY, apiToken);
+    }
+  }, [apiToken, requireAuth]);
+
+  // Open mode: never send Bearer (stale tokens 401). Auth mode: send token.
+  useEffect(() => {
+    let cancelled = false;
+    async function loadOptions() {
+      // Prefer open probe first so local verify ignores stale localStorage tokens.
+      let resp = await fetch("/api/v1/build-environment/options", {
+        headers: apiHeaders({}, "", false),
+      });
+      if (resp.status === 401) {
+        resp = await fetch("/api/v1/build-environment/options", {
+          headers: apiHeaders({}, apiToken || loadToken(), true),
+        });
+      }
+      if (!resp.ok) throw new Error(await resp.text());
+      const data = (await resp.json()) as Options;
+      if (!cancelled) setOptions(data);
+    }
+    loadOptions().catch((err) => {
+      if (!cancelled) setError(String(err));
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- bootstrap once; token reloads below
+  }, []);
 
   useEffect(() => {
+    if (!requireAuth) return;
     fetch("/api/v1/build-environment/options", {
-      headers: apiHeaders({}, apiToken),
+      headers: apiHeaders({}, apiToken, true),
     })
       .then(async (r) => {
         if (!r.ok) throw new Error(await r.text());
@@ -142,9 +196,8 @@ export default function App() {
       })
       .then(setOptions)
       .catch((err) => setError(String(err)));
-  }, [apiToken]);
+  }, [apiToken, requireAuth]);
 
-  // Poll image until READY after ensure (only when a factory row exists)
   useEffect(() => {
     const hash = ensureResult?.matchedProfileHash;
     if (!hash || ensureResult?.ready) return;
@@ -152,7 +205,7 @@ export default function App() {
 
     const timer = window.setInterval(() => {
       fetch(`/api/v1/images/${hash}`, {
-        headers: apiHeaders({}, apiToken),
+        headers: apiHeaders({}, apiToken, requireAuth),
       })
         .then(async (r) => {
           if (!r.ok) return;
@@ -168,7 +221,11 @@ export default function App() {
                   ready: data.ready,
                   image: data.image,
                   factoryLeaseId: data.factoryLeaseId,
+                  leaseExpiresAt: data.leaseExpiresAt,
                   matchedProfileHash: data.profileHash,
+                  localImageRef: data.localImageRef,
+                  localTarPath: data.localTarPath,
+                  localTarFile: data.localTarFile,
                   action: data.ready ? "REUSE_EXACT" : prev.action,
                 }
               : prev,
@@ -182,10 +239,11 @@ export default function App() {
     ensureResult?.ready,
     ensureResult?.imageStatus,
     apiToken,
+    requireAuth,
   ]);
 
   useEffect(() => {
-    if (!buildResult?.id) return;
+    if (localMode || !buildResult?.id) return;
     const terminal = new Set([
       "SUCCEEDED",
       "PROFILE_REJECTED",
@@ -197,14 +255,14 @@ export default function App() {
     if (terminal.has(buildResult.status)) return;
     const timer = window.setInterval(() => {
       fetch(`/api/v1/build-requests/${buildResult.id}`, {
-        headers: apiHeaders({}, apiToken),
+        headers: apiHeaders({}, apiToken, requireAuth),
       })
         .then((r) => r.json())
         .then((data) => setBuildResult(data))
         .catch(() => undefined);
     }, 1500);
     return () => window.clearInterval(timer);
-  }, [buildResult?.id, buildResult?.status, apiToken]);
+  }, [buildResult?.id, buildResult?.status, apiToken, requireAuth, localMode]);
 
   const vs = useMemo(
     () => options?.visualStudios.find((item) => item.id === env.visualStudio),
@@ -218,14 +276,16 @@ export default function App() {
     try {
       const resp = await fetch("/api/v1/images/ensure", {
         method: "POST",
-        headers: apiHeaders({ "Content-Type": "application/json" }, apiToken),
+        headers: apiHeaders({ "Content-Type": "application/json" }, apiToken, requireAuth),
         body: JSON.stringify({ environment: env }),
       });
       const data = await resp.json();
       if (!resp.ok) {
         const msg = detailMessage(data);
         if (resp.status === 503) {
-          setError(`${msg} — Ensure를 다시 눌러 재시도하세요.`);
+          setError(
+            `${msg} — 진행 중인 CREATING을 finalize/fail 하거나, 같은 환경으로 Ensure하세요.`,
+          );
         } else {
           setError(msg);
         }
@@ -248,7 +308,7 @@ export default function App() {
     try {
       const resp = await fetch(`/api/v1/images/${hash}/simulate`, {
         method: "POST",
-        headers: apiHeaders({}, apiToken),
+        headers: apiHeaders({}, apiToken, requireAuth),
       });
       const data = await resp.json();
       if (!resp.ok) {
@@ -256,7 +316,7 @@ export default function App() {
         return;
       }
       const status = await fetch(`/api/v1/images/${hash}`, {
-        headers: apiHeaders({}, apiToken),
+        headers: apiHeaders({}, apiToken, requireAuth),
       });
       const image = await status.json();
       setEnsureResult((prev) =>
@@ -267,6 +327,9 @@ export default function App() {
               ready: image.ready,
               image: image.image,
               matchedProfileHash: image.profileHash,
+              localImageRef: image.localImageRef,
+              localTarPath: image.localTarPath,
+              localTarFile: image.localTarFile,
               action: image.ready ? "REUSE_EXACT" : prev.action,
             }
           : prev,
@@ -290,6 +353,7 @@ export default function App() {
             "Idempotency-Key": crypto.randomUUID(),
           },
           apiToken,
+          requireAuth,
         ),
         body: JSON.stringify({
           project,
@@ -319,7 +383,7 @@ export default function App() {
     try {
       const resp = await fetch(`/api/v1/build-requests/${buildResult.id}/simulate`, {
         method: "POST",
-        headers: apiHeaders({}, apiToken),
+        headers: apiHeaders({}, apiToken, requireAuth),
       });
       const data = await resp.json();
       if (!resp.ok) {
@@ -327,7 +391,7 @@ export default function App() {
         return;
       }
       const refreshed = await fetch(`/api/v1/build-requests/${buildResult.id}`, {
-        headers: apiHeaders({}, apiToken),
+        headers: apiHeaders({}, apiToken, requireAuth),
       });
       setBuildResult(await refreshed.json());
     } catch (err) {
@@ -344,30 +408,29 @@ export default function App() {
       <header className="brand">
         <h1>MSBuild Build Portal</h1>
         <p>
-          1) 빌드 환경으로 이미지를 ensure → 2) READY 후 프로젝트 빌드 시작. Factory가
-          필요하면 Nexus에 푸시될 때까지 polling합니다.
-          {options?.simulateWorkers ? " (auto-simulate ON)" : ""}
-          {options?.requireAuth ? " · auth required" : ""}
+          {localMode
+            ? "환경을 고르고 Ensure image를 누르면 로컬에 이미지가 빌드·저장됩니다. (로그인/Nexus/Jenkins 없음)"
+            : "1) Ensure image → 2) READY 후 Start build."}
+          {options?.simulateWorkers ? " · simulate ON" : ""}
+          {requireAuth ? " · auth required" : ""}
         </p>
       </header>
 
       <div className="grid">
         <section className="panel">
           <h2>빌드 환경</h2>
-          <div className="field">
-            <label>API token (Bearer)</label>
-            <input
-              type="password"
-              value={apiToken}
-              placeholder="optional unless PORTAL_REQUIRE_AUTH"
-              onChange={(e) => setApiToken(e.target.value)}
-              autoComplete="off"
-            />
-            <p className="hint">
-              Simulate는 operator/admin 역할 토큰이 필요합니다. 값은 localStorage에만
-              보관됩니다.
-            </p>
-          </div>
+          {requireAuth && (
+            <div className="field">
+              <label>API token (Bearer)</label>
+              <input
+                type="password"
+                value={apiToken}
+                placeholder="required"
+                onChange={(e) => setApiToken(e.target.value)}
+                autoComplete="off"
+              />
+            </div>
+          )}
           {options && (
             <div className="presets">
               {options.presets.map((preset) => (
@@ -454,30 +517,35 @@ export default function App() {
             </select>
           </div>
 
-          <h2>프로젝트</h2>
-          {(
-            [
-              ["repository", "Repository"],
-              ["gitRef", "Git ref"],
-              ["solutionPath", "Solution path"],
-              ["configuration", "Configuration"],
-              ["platform", "Platform"],
-            ] as const
-          ).map(([key, label]) => (
-            <div className="field" key={key}>
-              <label>{label}</label>
-              <input
-                value={project[key]}
-                onChange={(e) => setProject({ ...project, [key]: e.target.value })}
-              />
-            </div>
-          ))}
+          {!localMode && (
+            <>
+              <h2>프로젝트</h2>
+              {(
+                [
+                  ["repository", "Repository"],
+                  ["gitRef", "Git ref"],
+                  ["solutionPath", "Solution path"],
+                  ["configuration", "Configuration"],
+                  ["platform", "Platform"],
+                ] as const
+              ).map(([key, label]) => (
+                <div className="field" key={key}>
+                  <label>{label}</label>
+                  <input
+                    value={project[key]}
+                    onChange={(e) => setProject({ ...project, [key]: e.target.value })}
+                  />
+                </div>
+              ))}
+            </>
+          )}
 
           <div className="actions">
             <button className="primary" type="button" disabled={busy} onClick={onEnsure}>
-              1. Ensure image
+              {localMode ? "Ensure image" : "1. Ensure image"}
             </button>
-            {!imageReady &&
+            {!localMode &&
+              !imageReady &&
               ensureResult &&
               ["CREATING", "VALIDATING"].includes(ensureResult.imageStatus) &&
               options?.simulateWorkers && (
@@ -490,18 +558,26 @@ export default function App() {
                   Simulate factory
                 </button>
               )}
-            <button
-              className="primary"
-              type="button"
-              disabled={busy || !imageReady}
-              onClick={onStartBuild}
-            >
-              2. Start build
-            </button>
-            {buildResult &&
-              !["SUCCEEDED", "PROFILE_REJECTED", "CANCELLED", "IMAGE_BUILD_FAILED", "PROJECT_BUILD_FAILED", "TEST_FAILED"].includes(
-                buildResult.status,
-              ) &&
+            {!localMode && (
+              <button
+                className="primary"
+                type="button"
+                disabled={busy || !imageReady}
+                onClick={onStartBuild}
+              >
+                2. Start build
+              </button>
+            )}
+            {!localMode &&
+              buildResult &&
+              ![
+                "SUCCEEDED",
+                "PROFILE_REJECTED",
+                "CANCELLED",
+                "IMAGE_BUILD_FAILED",
+                "PROJECT_BUILD_FAILED",
+                "TEST_FAILED",
+              ].includes(buildResult.status) &&
               options?.simulateWorkers && (
                 <button
                   className="secondary"
@@ -517,7 +593,7 @@ export default function App() {
         </section>
 
         <section className="panel">
-          <h2>이미지 / 빌드</h2>
+          <h2>{localMode ? "결과" : "이미지 / 빌드"}</h2>
           {!ensureResult && !buildResult && (
             <p style={{ color: "var(--muted)", margin: 0 }}>
               Preset을 고르거나 구성 후 Ensure image를 실행하세요.
@@ -543,28 +619,63 @@ export default function App() {
                   matchType: <span className="mono">{ensureResult.matchType}</span>
                 </div>
               )}
-              {ensureResult.requestedProfileHash && (
-                <div>
-                  requested: <span className="mono">{ensureResult.requestedProfileHash}</span>
-                </div>
-              )}
               {ensureResult.matchedProfileHash && (
                 <div>
-                  matched: <span className="mono">{ensureResult.matchedProfileHash}</span>
+                  profile: <span className="mono">{ensureResult.matchedProfileHash}</span>
+                </div>
+              )}
+              {ensureResult.factoryLeaseId && (
+                <div>
+                  factoryLeaseId:{" "}
+                  <span className="mono">{ensureResult.factoryLeaseId}</span>
+                  {ensureResult.leaseExpiresAt ? (
+                    <>
+                      {" "}
+                      (expires <span className="mono">{ensureResult.leaseExpiresAt}</span>)
+                    </>
+                  ) : null}
                 </div>
               )}
               {ensureResult.image && (
-                <div>
-                  digest: <span className="mono">{ensureResult.image.digest}</span>
-                </div>
+                <>
+                  <div>
+                    repository:{" "}
+                    <span className="mono">
+                      {ensureResult.image.repository}:{ensureResult.image.tag}
+                    </span>
+                  </div>
+                  <div>
+                    digest: <span className="mono">{ensureResult.image.digest}</span>
+                  </div>
+                </>
               )}
-              {!!ensureResult.extraCapabilities?.length && (
-                <div>
-                  extra: <span className="mono">{ensureResult.extraCapabilities.join(", ")}</span>
-                </div>
+              {(ensureResult.localImageRef || ensureResult.localTarFile) && (
+                <>
+                  {ensureResult.localImageRef && (
+                    <div>
+                      local image: <span className="mono">{ensureResult.localImageRef}</span>
+                    </div>
+                  )}
+                  {ensureResult.localTarFile && (
+                    <div>
+                      saved tar:{" "}
+                      <span className="mono">./local-images/{ensureResult.localTarFile}</span>
+                    </div>
+                  )}
+                  <p className="hint" style={{ marginTop: "0.75rem" }}>
+                    확인:{" "}
+                    <span className="mono">docker images msbuild-local</span> /{" "}
+                    <span className="mono">
+                      docker load -i ./local-images/{ensureResult.localTarFile || "&lt;tag&gt;.tar"}
+                    </span>
+                  </p>
+                </>
               )}
               {!ensureResult.ready && ensureResult.estimatedWaitMinutes ? (
-                <div>estimated wait: ~{ensureResult.estimatedWaitMinutes} min</div>
+                <div>
+                  {localMode ? "building…" : "estimated wait:"} ~{ensureResult.estimatedWaitMinutes}{" "}
+                  min
+                </div>
               ) : null}
               {ensureResult.errorMessage && (
                 <div className="error">{ensureResult.errorMessage}</div>
@@ -572,7 +683,7 @@ export default function App() {
             </div>
           )}
 
-          {buildResult && (
+          {!localMode && buildResult && (
             <div className="result" style={{ marginTop: "1.25rem" }}>
               <h2>Build request</h2>
               <span

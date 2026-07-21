@@ -23,9 +23,15 @@ class Settings(BaseSettings):
     default_actor_roles: str = "builder"
     # None = follow catalog.mvpFactoryEnabled; True/False overrides
     factory_enabled: bool | None = None
+    # Floor for new CREATING leases (minutes). Air-gap compose sets 720.
     factory_lease_minutes: int = 135
     # Local/dev: auto-simulate factory + project build after queueing
     simulate_workers: bool = False
+    # Step-by-step verify: build a local stub image + docker save (no Jenkins/Nexus).
+    # Requires Docker CLI + /var/run/docker.sock in the portal container.
+    local_factory: bool = False
+    local_images_dir: str = "/var/portal-local-images"
+    local_image_repo: str = "msbuild-local"
     # When false, refuse to boot with the default HMAC secret.
     allow_insecure_defaults: bool = True
     jenkins_url: str | None = None

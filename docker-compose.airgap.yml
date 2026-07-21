@@ -1,0 +1,66 @@
+# Closed-network Portal (Docker only, no Kubernetes).
+# Goal: UI → ensure → Jenkins factory → Windows docker build → Nexus → READY
+#
+# Prerequisites on the closed network:
+#   - Linux Docker host (or any host that can run this Linux Portal image)
+#   - Existing Jenkins + Windows agent label msbuild-factory
+#   - Nexus docker registry reachable from the factory host
+#
+# Usage:
+#   cp .env.airgap.example .env.airgap   # edit values
+#   docker load -i msbuild-portal.tar   # after USB import (or build if base images exist)
+#   docker compose -f docker-compose.airgap.yml --env-file .env.airgap up -d
+services:
+  postgres:
+    image: postgres:16-alpine
+    platform: linux/amd64
+    environment:
+      POSTGRES_DB: portal
+      POSTGRES_USER: portal
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-portal}
+    volumes:
+      - portal-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U portal -d portal"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  portal:
+    # Prefer pre-loaded image from USB. Override if you retagged on import:
+    #   image: nexus.internal/build/msbuild-portal:airgap
+    image: ${PORTAL_IMAGE:-msbuild-portal:airgap}
+    platform: linux/amd64
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${PORTAL_HOST_PORT:-8000}:8000"
+    environment:
+      PORTAL_DATABASE_URL: postgresql+psycopg://portal:${POSTGRES_PASSWORD:-portal}@postgres:5432/portal
+      PORTAL_ALLOW_INSECURE_DEFAULTS: "false"
+      PORTAL_SIMULATE_WORKERS: "false"
+      PORTAL_REQUIRE_AUTH: "true"
+      PORTAL_DEFAULT_ACTOR_ROLES: "builder"
+      PORTAL_CALLBACK_HMAC_SECRET: ${PORTAL_CALLBACK_HMAC_SECRET}
+      PORTAL_API_TOKENS: ${PORTAL_API_TOKENS}
+      PORTAL_JENKINS_URL: ${PORTAL_JENKINS_URL}
+      PORTAL_JENKINS_USERNAME: ${PORTAL_JENKINS_USERNAME}
+      PORTAL_JENKINS_API_TOKEN: ${PORTAL_JENKINS_API_TOKEN}
+      PORTAL_REGISTRY_HOST: ${PORTAL_REGISTRY_HOST}
+      PORTAL_REGISTRY_PUSH_HOST: ${PORTAL_REGISTRY_PUSH_HOST:-}
+      PORTAL_REGISTRY_FINAL_REPO: ${PORTAL_REGISTRY_FINAL_REPO:-build/msbuild-profile}
+      PORTAL_REGISTRY_STAGING_REPO: ${PORTAL_REGISTRY_STAGING_REPO:-build/msbuild-profile-staging}
+      PORTAL_GIT_RESOLVE_MODE: ${PORTAL_GIT_RESOLVE_MODE:-placeholder}
+      PORTAL_GIT_URL_TEMPLATE: ${PORTAL_GIT_URL_TEMPLATE:-}
+      PORTAL_GIT_REQUIRE_EXACT: ${PORTAL_GIT_REQUIRE_EXACT:-false}
+      PORTAL_CORS_ORIGINS: ${PORTAL_CORS_ORIGINS:-*}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+
+volumes:
+  portal-pg:

@@ -33,6 +33,7 @@ class EnsureImageResult:
     image: dict[str, str] | None
     windows_base: str | None
     factory_lease_id: str | None
+    lease_expires_at: str | None = None
     error_code: str | None = None
     error_message: str | None = None
     factory_phase: str | None = None  # CREATING | WAITING | READY | None
@@ -51,6 +52,7 @@ class EnsureImageResult:
             "image": self.image,
             "windowsBase": self.windows_base,
             "factoryLeaseId": self.factory_lease_id,
+            "leaseExpiresAt": self.lease_expires_at,
             "errorCode": self.error_code,
             "errorMessage": self.error_message,
             "ready": self.image_status in ready_statuses and self.image is not None,
@@ -118,6 +120,7 @@ def ensure_image(
             image=ref if _digest_usable(ref.get("digest")) else None,
             windows_base=resolved.windows_base,
             factory_lease_id=None,
+            lease_expires_at=None,
             factory_phase="READY",
         )
 
@@ -148,10 +151,13 @@ def ensure_image(
             image=_image_ref(image) if _digest_usable(image.image_digest) else None,
             windows_base=image.windows_base,
             factory_lease_id=None,
+            lease_expires_at=None,
             factory_phase="READY",
         )
 
-    wait = int(catalog.estimated_minutes.get("coldAverage", 75))
+    from app.config import get_settings
+
+    wait = 1 if get_settings().local_factory else int(catalog.estimated_minutes.get("coldAverage", 75))
     return EnsureImageResult(
         requested_profile_hash=resolved.profile_hash,
         matched_profile_hash=image.profile_hash,
@@ -164,15 +170,51 @@ def ensure_image(
         image=None,
         windows_base=image.windows_base,
         factory_lease_id=image.lease_id,
+        lease_expires_at=(
+            image.lease_expires_at.isoformat() if image.lease_expires_at else None
+        ),
         factory_phase=phase,
     )
 
 
 def get_image_status(session: Session, profile_hash: str) -> dict[str, Any]:
+    import json
+    from pathlib import Path
+
+    from app.config import get_settings
+    from app.services.local_factory import local_artifact_paths
+
     row = get_active_image(session, profile_hash)
     if row is None:
         raise LookupError("image not found")
     ready = row.status in {"READY", "DEPRECATED"} and _digest_usable(row.image_digest)
+    local_image_ref = None
+    local_tar_path = None
+    local_tar_file = None
+    settings = get_settings()
+
+    meta: dict[str, Any] | None = None
+    if row.validation_result_json:
+        try:
+            parsed = json.loads(row.validation_result_json)
+            if isinstance(parsed, dict):
+                meta = parsed
+        except json.JSONDecodeError:
+            meta = None
+
+    locally_built = bool(meta and meta.get("mode") == "local-factory")
+    if locally_built:
+        local_image_ref = meta.get("localImageRef")
+        local_tar_path = meta.get("localTarPath")
+        local_tar_file = meta.get("localTarFile")
+    elif settings.local_factory and row.image_tag and row.image_repository == settings.local_image_repo:
+        # Only advertise paths when the tar was actually written (not seeded hot presets).
+        arts = local_artifact_paths(settings, row.image_tag)
+        if Path(arts["localTarPath"]).is_file():
+            local_image_ref = arts["localImageRef"]
+            local_tar_path = arts["localTarPath"]
+            local_tar_file = arts["localTarFile"]
+
     return {
         "profileHash": row.profile_hash,
         "imageStatus": row.status,
@@ -181,4 +223,7 @@ def get_image_status(session: Session, profile_hash: str) -> dict[str, Any]:
         "windowsBase": row.windows_base,
         "factoryLeaseId": row.lease_id,
         "leaseExpiresAt": row.lease_expires_at.isoformat() if row.lease_expires_at else None,
+        "localImageRef": local_image_ref,
+        "localTarPath": local_tar_path,
+        "localTarFile": local_tar_file,
     }

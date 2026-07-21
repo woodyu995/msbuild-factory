@@ -62,26 +62,35 @@ python jenkins/shared-library/scripts/portal_factory_agent.py dry-run-all \
 4. `finalize` — READY + capabilityProfile Callback  
    실패 시 `fail`
 
-### 실빌드 (non-dry-run) → Nexus push
+### 실빌드 (non-dry-run) — 로컬 저장 (Nexus 전 단계)
 
 ```bash
-export IMAGE_FACTORY_LAYOUT_ROOT=\\storage\vs-layouts
-export IMAGE_FACTORY_INSTALLER_ROOT=\\storage\installers
+export IMAGE_FACTORY_LAYOUT_ROOT=D:\vs-layouts\vs2022-17.14.x
+export IMAGE_FACTORY_INSTALLER_ROOT=D:\installers
 export FACTORY_DRY_RUN=0
-export NEXUS_REGISTRY_HOST=nexus.company.io:8082
-# Jenkins provides NEXUS_DOCKER_USER / NEXUS_DOCKER_PASSWORD via nexus-docker credential
+export FACTORY_SKIP_PUSH=1
+export FACTORY_DOCKER_SAVE_DIR=D:\factory-images
 
 python jenkins/shared-library/scripts/portal_factory_agent.py build \
-  --portal-url https://portal.internal \
+  --portal-url http://portal-host:8000 \
   --hmac-secret "$PORTAL_HMAC" \
   --profile-hash <PROFILE_HASH> \
   --lease-id <LEASE_ID> \
-  --request-id <BUILD_REQUEST_ID> \
   --work-dir D:\factory-work\<PROFILE_HASH>
 ```
 
-요구사항: Docker Engine(Windows containers), **Nexus docker login**, Layout/Installer 경로 존재.  
-`build`는 staging tag로 `docker build` → final tag → `docker login` → `docker push` → RepoDigest 수집 후 `result.json`에 기록한다.
+`FACTORY_SKIP_PUSH=1`이면 Nexus 없이 로컬 tag + optional `docker save`만 수행하고 image Id digest로 READY 한다.
+
+### 실빌드 → Nexus push (이후 단계)
+
+```bash
+export FACTORY_SKIP_PUSH=0
+export NEXUS_REGISTRY_HOST=nexus.company.io:8082
+# Jenkins provides NEXUS_DOCKER_USER / NEXUS_DOCKER_PASSWORD via nexus-docker credential
+```
+
+요구사항: Docker Engine(Windows containers), Layout/Installer 경로, (push 시) Nexus login.  
+자세한 폐쇄망 절차: `docs/airgap-windows-factory-tutorial.md`.
 
 Portal `PORTAL_REGISTRY_HOST` (pull/ref)와 optional `PORTAL_REGISTRY_PUSH_HOST`(factory login/push)가
 artifacts의 repository 경로를 결정한다. Factory 호스트에서 해석 가능한 이름을 쓴다.

@@ -1,0 +1,38 @@
+# Closed-network Portal for REAL Windows factory builds (Server Core + VS Build Tools).
+# Portal runs on Linux Docker; factory runs on a separate Windows host (no Jenkins required).
+#
+# Usage (closed Linux host, after USB docker load of msbuild-portal:airgap):
+#   docker compose -f docker-compose.airgap-windows.yml up -d
+# Then on Windows factory host: follow docs/airgap-windows-factory-tutorial.md
+services:
+  portal:
+    image: ${PORTAL_IMAGE:-msbuild-portal:airgap}
+    platform: linux/amd64
+    ports:
+      - "${PORTAL_HOST_PORT:-8000}:8000"
+    environment:
+      PORTAL_ALLOW_INSECURE_DEFAULTS: "true"
+      PORTAL_LOCAL_FACTORY: "false"
+      PORTAL_SIMULATE_WORKERS: "false"
+      PORTAL_REQUIRE_AUTH: "false"
+      PORTAL_DEFAULT_ACTOR_ROLES: "operator,builder"
+      PORTAL_CALLBACK_HMAC_SECRET: ${PORTAL_CALLBACK_HMAC_SECRET:-airgap-dev-hmac-change-me}
+      # Real VS offline layout + install often exceeds the default ~2h lease.
+      PORTAL_FACTORY_LEASE_MINUTES: "${PORTAL_FACTORY_LEASE_MINUTES:-720}"
+      PORTAL_GIT_RESOLVE_MODE: "placeholder"
+      PORTAL_DATABASE_URL: "sqlite:////data/portal.db"
+      # Local tags on the Windows factory host (Nexus push later)
+      PORTAL_REGISTRY_HOST: "msbuild-local"
+      PORTAL_REGISTRY_FINAL_REPO: "profile"
+      PORTAL_REGISTRY_STAGING_REPO: "profile-staging"
+    volumes:
+      - portal-windows-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 25s
+
+volumes:
+  portal-windows-data:

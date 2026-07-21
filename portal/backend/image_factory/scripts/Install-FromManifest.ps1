@@ -5,21 +5,165 @@ param(
 $ErrorActionPreference = "Stop"
 $manifest = Get-Content -Raw -Path $ManifestPath | ConvertFrom-Json
 
-Write-Host "Installing VS layout release:" $manifest.visualStudio.layoutRelease
+$layoutRoot = $env:IMAGE_FACTORY_LAYOUT_ROOT
+$installerRoot = $env:IMAGE_FACTORY_INSTALLER_ROOT
+if (-not $layoutRoot) { throw "IMAGE_FACTORY_LAYOUT_ROOT is not set" }
+if (-not $installerRoot) { throw "IMAGE_FACTORY_INSTALLER_ROOT is not set" }
+
+$release = [string]$manifest.visualStudio.layoutRelease
+Write-Host "Installing VS Build Tools from offline layout:" $release
 Write-Host "Components:" ($manifest.visualStudio.components -join ", ")
 
-# Placeholder steps — real Factory host maps RO layout and runs vs_setup.exe:
-# & "$env:IMAGE_FACTORY_LAYOUT_ROOT\vs_setup.exe" --quiet --norestart --wait `
-#     --noUpdateInstaller --noWeb --config C:\ImageBuild\profile.vsconfig
+# Allow base images that already contain Build Tools (verify / incremental).
+if ($env:FACTORY_SKIP_VS_INSTALL -eq "1") {
+  Write-Host "FACTORY_SKIP_VS_INSTALL=1 - skipping vs_setup.exe"
+} else {
+  $setupCandidates = @(
+    (Join-Path $layoutRoot "vs_setup.exe"),
+    (Join-Path $layoutRoot "vs_BuildTools.exe"),
+    (Join-Path $layoutRoot (Join-Path $release "vs_setup.exe")),
+    (Join-Path $layoutRoot (Join-Path $release "vs_BuildTools.exe"))
+  )
+  $setup = $setupCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+  if (-not $setup) {
+    $expected1 = Join-Path $layoutRoot "vs_setup.exe"
+    $expected2 = Join-Path $layoutRoot (Join-Path $release "vs_setup.exe")
+    throw ("vs_setup.exe / vs_BuildTools.exe not found under IMAGE_FACTORY_LAYOUT_ROOT={0}. Expected one of: {1} ; {2}" -f $layoutRoot, $expected1, $expected2)
+  }
+
+  $config = "C:\ImageBuild\profile.vsconfig"
+  if (-not (Test-Path $config)) { throw ("Missing {0}" -f $config) }
+
+  # Build Tools SKU rejects VC.MFC (IDE-only); remap to ATLMFC for older Portal manifests.
+  $vsconfigObj = Get-Content -Raw -Path $config | ConvertFrom-Json
+  if ($vsconfigObj.components) {
+    $fixed = @()
+    foreach ($c in @($vsconfigObj.components)) {
+      if ($c -eq "Microsoft.VisualStudio.Component.VC.MFC") {
+        Write-Host "Remapping VC.MFC -> VC.ATLMFC for Build Tools"
+        $fixed += "Microsoft.VisualStudio.Component.VC.ATLMFC"
+      } else {
+        $fixed += $c
+      }
+    }
+    $vsconfigObj.components = @($fixed | Select-Object -Unique)
+    ($vsconfigObj | ConvertTo-Json -Depth 8) | Set-Content -Path $config -Encoding UTF8
+  }
+
+  # Server Core / offline 5003: layout\certificates alone is NOT enough.
+  # Microsoft Windows Code Signing PCA 2024 is required and is NOT in the layout
+  # (see learn.microsoft.com install-failure missing certificate). We ship it under
+  # scripts\certs and also import layout certificates + disable CRL checks.
+  function Import-CertFiles([string]$dir) {
+    if (-not (Test-Path $dir)) { return 0 }
+    $files = @(
+      Get-ChildItem -Path $dir -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Extension -match '\.(cer|crt)$' }
+    )
+    foreach ($f in $files) {
+      Write-Host "  certutil Root+CA:" $f.Name "from" $dir
+      & certutil.exe -addstore -f "Root" $f.FullName | Out-Host
+      & certutil.exe -addstore -f "CA" $f.FullName | Out-Host
+    }
+    return ,$files.Count
+  }
+
+  Write-Host "SCRIPT_REV=pca2024-certs-20260721"
+  $imported = 0
+  $imported += Import-CertFiles (Join-Path $PSScriptRoot "certs")
+  $imported += Import-CertFiles "C:\ImageBuild\certs"
+  $imported += Import-CertFiles (Join-Path $layoutRoot "certificates")
+  $imported += Import-CertFiles (Join-Path $installerRoot "certs")
+  if ($imported -lt 1) {
+    Write-Host "WARNING: no .cer/.crt files imported - expect VS exit 5003"
+  } else {
+    Write-Host "Imported certificate file count:" $imported
+  }
+
+  # Offline containers cannot reach Microsoft CRL/OCSP.
+  Write-Host "Disabling Authenticode revocation checks for offline VS setup"
+  $softPubPaths = @(
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WinTrust\Trust Providers\Software Publishing",
+    "HKCU:\Software\Microsoft\Windows\CurrentVersion\WinTrust\Trust Providers\Software Publishing"
+  )
+  foreach ($p in $softPubPaths) {
+    if (-not (Test-Path $p)) {
+      New-Item -Path $p -Force | Out-Null
+    }
+    New-ItemProperty -Path $p -Name "State" -PropertyType DWord -Value 0x23e00 -Force | Out-Null
+  }
+  $authRoot = "HKLM:\SOFTWARE\Policies\Microsoft\SystemCertificates\AuthRoot"
+  if (-not (Test-Path $authRoot)) {
+    New-Item -Path $authRoot -Force | Out-Null
+  }
+  New-ItemProperty -Path $authRoot -Name "DisableRootAutoUpdate" -PropertyType DWord -Value 1 -Force | Out-Null
+  New-ItemProperty -Path $authRoot -Name "EnableDisallowedPublishersAutoUpdate" -PropertyType DWord -Value 0 -Force | Out-Null
+
+  foreach ($sigPath in @($setup, (Join-Path $layoutRoot "vs_installer.opc"))) {
+    if (Test-Path $sigPath) {
+      try {
+        $sig = Get-AuthenticodeSignature -FilePath $sigPath
+        Write-Host ("Authenticode {0}: Status={1} Signer={2}" -f $sigPath, $sig.Status, $sig.SignerCertificate.Subject)
+      } catch {
+        Write-Host "Authenticode check failed for" $sigPath ":" $_.Exception.Message
+      }
+    }
+  }
+
+  Write-Host "Running" $setup
+  Write-Host "vsconfig:"
+  Get-Content -Raw -Path $config | Write-Host
+  Write-Host "layoutRoot listing (top):"
+  Get-ChildItem -Path $layoutRoot -ErrorAction SilentlyContinue |
+    Select-Object -First 20 Name, Length |
+    Format-Table -AutoSize |
+    Out-String |
+    Write-Host
+
+  $proc = Start-Process -FilePath $setup -ArgumentList @(
+    "--quiet",
+    "--norestart",
+    "--wait",
+    "--noUpdateInstaller",
+    "--noWeb",
+    "--config", $config
+  ) -Wait -PassThru
+  if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010) {
+    Write-Host "VS installer exit code:" $proc.ExitCode
+    Get-ChildItem -Path $env:TEMP -Filter "dd_*.log" -ErrorAction SilentlyContinue |
+      Sort-Object LastWriteTime -Descending |
+      Select-Object -First 3 |
+      ForEach-Object {
+        Write-Host ("---- installer log: {0} ----" -f $_.FullName)
+        Get-Content -Path $_.FullName -Tail 80 -ErrorAction SilentlyContinue
+      }
+    throw ("VS Build Tools install failed with exit code {0}. Offline --noWeb needs all selected components in the layout under {1}. Check profile.vsconfig." -f $proc.ExitCode, $layoutRoot)
+  }
+  Write-Host ("VS Build Tools install completed (exit {0})" -f $proc.ExitCode)
+}
 
 foreach ($sdk in @($manifest.dotnetSdks)) {
-  Write-Host "Would install .NET SDK" $sdk.version "sha" $sdk.installerSha256
-}
-foreach ($tp in @($manifest.dotnetFrameworkTargetingPacks)) {
-  Write-Host "Would install Targeting Pack" $tp.version
-}
-foreach ($ws in @($manifest.windowsSdks)) {
-  Write-Host "Would install Windows SDK" $ws.version
+  $ver = [string]$sdk.version
+  Write-Host "Looking for .NET SDK installer version" $ver
+  $sdkSetup = Get-ChildItem -Path $installerRoot -Filter "*.exe" -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match [regex]::Escape($ver) } |
+    Select-Object -First 1
+  if ($sdkSetup) {
+    Write-Host "Installing" $sdkSetup.FullName
+    $p = Start-Process -FilePath $sdkSetup.FullName -ArgumentList "/install","/quiet","/norestart" -Wait -PassThru
+    if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) {
+      throw (".NET SDK install failed: {0}" -f $p.ExitCode)
+    }
+  } else {
+    Write-Host "No matching .NET SDK installer under" $installerRoot "(skipped)"
+  }
 }
 
-Write-Host "Install-FromManifest placeholder finished"
+foreach ($tp in @($manifest.dotnetFrameworkTargetingPacks)) {
+  Write-Host "Targeting Pack requested:" $tp.version "(expect present in VS layout / installer root)"
+}
+foreach ($ws in @($manifest.windowsSdks)) {
+  Write-Host "Windows SDK requested:" $ws.version "(expect present in VS layout components)"
+}
+
+Write-Host "Install-FromManifest finished"

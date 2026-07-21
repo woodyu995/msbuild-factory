@@ -29,12 +29,76 @@ MAX_GLOBAL_CREATING = 1
 
 
 class FactoryBusy(Exception):
-    pass
+    def __init__(
+        self,
+        message: str = "factory slots full",
+        *,
+        blocking: list[dict[str, Any]] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.blocking = blocking or []
 
 
 def _lease_ttl_minutes(catalog: Catalog) -> int:
+    from app.config import get_settings
+
     cold = int((catalog.estimated_minutes or {}).get("coldAverage") or 90)
-    return max(DEFAULT_LEASE_MINUTES, int(cold * 1.5))
+    from_catalog = max(DEFAULT_LEASE_MINUTES, int(cold * 1.5))
+    # PORTAL_FACTORY_LEASE_MINUTES can raise the floor (air-gap VS builds need hours).
+    return max(from_catalog, int(get_settings().factory_lease_minutes))
+
+
+def _heartbeat_extend_minutes() -> int:
+    from app.config import get_settings
+
+    mins = int(get_settings().factory_lease_minutes)
+    return max(30, min(180, mins // 4 if mins >= 120 else 30))
+
+
+def _aware(dt: Any) -> Any:
+    if dt is not None and getattr(dt, "tzinfo", None) is None:
+        from datetime import timezone
+
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _rearm_inflight_lease(image: BuildImage, catalog: Catalog) -> None:
+    """Refresh CREATING/VALIDATING lease TTL; mint a new leaseId when wall-clock lapsed.
+
+    Profile hash stays the same; operators must copy the (possibly new) factoryLeaseId
+    after Ensure. Old Portal builds that skip this leave leaseExpiresAt in the past.
+    """
+    now = utcnow()
+    expires = _aware(image.lease_expires_at)
+    expired = expires is None or expires <= now
+    if expired or not image.lease_id:
+        image.lease_id = f"factory-{uuid.uuid4().hex[:10]}"
+        image.lease_owner = image.lease_id
+    image.lease_expires_at = now + timedelta(minutes=_lease_ttl_minutes(catalog))
+    image.updated_at = now
+
+
+def reclaim_or_require_lease(
+    image: BuildImage,
+    lease_id: str,
+    *,
+    extend: bool = True,
+) -> None:
+    """Accept matching factory lease; renew if wall-clock TTL lapsed while still CREATING.
+
+    Long air-gap builds (layout copy + VS install) often outlive the initial TTL.
+    Reconcile clears lease_id on expiry — after that, reclaim is no longer possible.
+    """
+    if image.status not in {"CREATING", "VALIDATING"}:
+        raise PermissionError("factory lease not active for this profile")
+    if not image.lease_id or image.lease_id != lease_id:
+        raise PermissionError("stale or missing leaseId")
+    now = utcnow()
+    expires = _aware(image.lease_expires_at)
+    if extend or (expires is not None and expires <= now):
+        image.lease_expires_at = now + timedelta(minutes=_heartbeat_extend_minutes())
+        image.updated_at = now
 
 
 def count_creating(session: Session) -> int:
@@ -114,6 +178,8 @@ def start_or_join_factory(
     if existing and existing.status == "READY":
         return existing, "READY"
     if existing and existing.status in {"CREATING", "VALIDATING"}:
+        _rearm_inflight_lease(existing, catalog)
+        session.flush()
         return existing, "WAITING"
     if existing and existing.status == "QUARANTINED":
         return existing, "QUARANTINED"
@@ -123,13 +189,41 @@ def start_or_join_factory(
     if existing and existing.status == "READY":
         return existing, "READY"
     if existing and existing.status in {"CREATING", "VALIDATING"}:
+        _rearm_inflight_lease(existing, catalog)
+        session.flush()
         return existing, "WAITING"
     if existing and existing.status == "QUARANTINED":
         return existing, "QUARANTINED"
 
-    if count_creating(session) >= MAX_GLOBAL_CREATING:
-        raise FactoryBusy("factory slots full")
+    # Drop abandoned expired CREATING rows so a new cold profile can take the slot.
+    # (Same-profile join above soft-renews first, so an in-flight holder is kept.)
+    from app.services.reconcile import reconcile_expired_leases
 
+    reconcile_expired_leases(session)
+
+    if count_creating(session) >= MAX_GLOBAL_CREATING:
+        blockers = [
+            {
+                "profileHash": row.profile_hash,
+                "status": row.status,
+                "leaseId": row.lease_id,
+                "leaseExpiresAt": row.lease_expires_at.isoformat() if row.lease_expires_at else None,
+                "vsGeneration": row.vs_generation,
+                "windowsBase": row.windows_base,
+            }
+            for row in session.scalars(
+                select(BuildImage).where(BuildImage.status.in_(["CREATING", "VALIDATING"]))
+            ).all()
+        ]
+        raise FactoryBusy(
+            "factory slots full — another image is still CREATING; "
+            "finish/finalize it, or fail that lease to free the slot",
+            blocking=blockers,
+        )
+
+    from app.config import get_settings
+
+    settings = get_settings()
     lease_id = f"factory-{uuid.uuid4().hex[:10]}"
     if existing and existing.status in {"FAILED", "DEPRECATED"}:
         existing.status = "CREATING"
@@ -148,9 +242,10 @@ def start_or_join_factory(
         image = existing
     else:
         tag = f"vs{resolved.vs_generation}-{resolved.profile_hash[:12]}"
+        repo = settings.local_image_repo if settings.local_factory else _registry().final_image
         image = BuildImage(
             profile_hash=resolved.profile_hash,
-            image_repository=_registry().final_image,
+            image_repository=repo,
             image_tag=tag,
             image_digest=f"sha256:pending-{resolved.profile_hash[:16]}",
             status="CREATING",
@@ -188,16 +283,19 @@ def start_or_join_factory(
                 return raced, "READY"
             raise
 
-    jenkins = get_jenkins_client()
-    trigger = jenkins.trigger_job(
-        FACTORY_JOB,
-        {
-            "BUILD_REQUEST_ID": request_id or "",
-            "PROFILE_HASH": resolved.profile_hash,
-            "FACTORY_LEASE_ID": image.lease_id,
-        },
-    )
-    image.factory_job_id = trigger.queue_id
+    if settings.local_factory:
+        image.factory_job_id = "local-factory"
+    else:
+        jenkins = get_jenkins_client()
+        trigger = jenkins.trigger_job(
+            FACTORY_JOB,
+            {
+                "BUILD_REQUEST_ID": request_id or "",
+                "PROFILE_HASH": resolved.profile_hash,
+                "FACTORY_LEASE_ID": image.lease_id,
+            },
+        )
+        image.factory_job_id = trigger.queue_id
     image.updated_at = utcnow()
     session.flush()
     return image, "CREATING"
@@ -372,6 +470,9 @@ def wake_waiters_for_image(
     failure_message: str | None = None,
 ) -> list[str]:
     """Transition Exact waiters / creators to next state. Returns affected request ids."""
+    from app.config import get_settings
+
+    local_factory = bool(get_settings().local_factory)
     waiters = session.scalars(
         select(BuildRequest).where(
             BuildRequest.requested_profile_hash == image.profile_hash,
@@ -383,15 +484,41 @@ def wake_waiters_for_image(
     affected: list[str] = []
     for request in waiters:
         if success:
-            queue_project_build(
-                session,
-                request,
-                image,
-                match_type="CREATED" if request.match_type == "CREATED" else "EXACT",
-            )
-            # keep CREATED if it owned the factory run
-            if request.match_type not in {"CREATED", "EXACT"}:
-                request.match_type = "EXACT"
+            match_type = "CREATED" if request.match_type == "CREATED" else "EXACT"
+            if local_factory:
+                # Local verify has no Jenkins project-build job — pin image only.
+                request.matched_profile_hash = image.profile_hash
+                request.match_type = match_type
+                request.image_digest = image.image_digest
+                request.status = "BUILD_QUEUED"
+                request.error_code = None
+                request.error_message = None
+                request.finished_at = None
+                request.jenkins_job_name = None
+                request.jenkins_queue_id = None
+                image.last_used_at = utcnow()
+                image.updated_at = utcnow()
+                append_event(
+                    session,
+                    request.id,
+                    "BUILD_QUEUED",
+                    "Image READY (local factory; project build not started)",
+                    {
+                        "matchType": match_type,
+                        "matchedProfileHash": image.profile_hash,
+                        "imageDigest": image.image_digest,
+                        "localFactory": True,
+                    },
+                )
+            else:
+                queue_project_build(
+                    session,
+                    request,
+                    image,
+                    match_type=match_type,
+                )
+                if request.match_type not in {"CREATED", "EXACT"}:
+                    request.match_type = "EXACT"
         else:
             request.status = "IMAGE_BUILD_FAILED"
             request.error_code = "IMAGE_BUILD_FAILED"
@@ -403,23 +530,19 @@ def wake_waiters_for_image(
     return affected
 
 
-def heartbeat_lease(session: Session, profile_hash: str, lease_id: str, extend_minutes: int = 30) -> BuildImage:
+def heartbeat_lease(
+    session: Session,
+    profile_hash: str,
+    lease_id: str,
+    extend_minutes: int | None = None,
+) -> BuildImage:
     image = get_active_image(session, profile_hash, for_update=True)
     if image is None:
         raise LookupError("image not found")
-    if not image.lease_id or image.lease_id != lease_id:
-        raise PermissionError("stale leaseId")
-    now = utcnow()
-    expires = image.lease_expires_at
-    if expires is not None:
-        if expires.tzinfo is None:
-            from datetime import timezone
-
-            expires = expires.replace(tzinfo=timezone.utc)
-        if expires <= now:
-            raise PermissionError("lease expired")
-    image.lease_expires_at = now + timedelta(minutes=extend_minutes)
-    image.updated_at = now
+    reclaim_or_require_lease(image, lease_id, extend=True)
+    if extend_minutes is not None:
+        image.lease_expires_at = utcnow() + timedelta(minutes=extend_minutes)
+        image.updated_at = utcnow()
     session.flush()
     return image
 
@@ -429,17 +552,6 @@ def require_active_factory_lease(session: Session, profile_hash: str, lease_id: 
     image = get_active_image(session, profile_hash, for_update=True)
     if image is None:
         raise LookupError("image not found")
-    if image.status not in {"CREATING", "VALIDATING"}:
-        raise PermissionError("factory lease not active for this profile")
-    if not image.lease_id or image.lease_id != lease_id:
-        raise PermissionError("stale or missing leaseId")
-    now = utcnow()
-    expires = image.lease_expires_at
-    if expires is not None:
-        if expires.tzinfo is None:
-            from datetime import timezone
-
-            expires = expires.replace(tzinfo=timezone.utc)
-        if expires <= now:
-            raise PermissionError("lease expired")
+    reclaim_or_require_lease(image, lease_id, extend=True)
+    session.flush()
     return image
