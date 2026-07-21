@@ -38,6 +38,15 @@ Expected one of:
   if (-not (Test-Path $config)) { throw "Missing $config" }
 
   Write-Host "Running" $setup
+  Write-Host "vsconfig:"
+  Get-Content -Raw -Path $config | Write-Host
+  Write-Host "layoutRoot listing (top):"
+  Get-ChildItem -Path $layoutRoot -ErrorAction SilentlyContinue |
+    Select-Object -First 20 Name, Length |
+    Format-Table -AutoSize |
+    Out-String |
+    Write-Host
+
   $proc = Start-Process -FilePath $setup -ArgumentList @(
     "--quiet",
     "--norestart",
@@ -46,10 +55,30 @@ Expected one of:
     "--noWeb",
     "--config", $config
   ) -Wait -PassThru
-  if ($proc.ExitCode -ne 0) {
-    throw "VS Build Tools install failed with exit code $($proc.ExitCode)"
+  if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010) {
+    Write-Host "VS installer exit code:" $proc.ExitCode
+    $logs = @(
+      (Join-Path $env:TEMP "dd_setup_*.log"),
+      (Join-Path $env:TEMP "dd_bootstrapper_*.log"),
+      (Join-Path $env:TEMP "dd_client_*.log")
+    )
+    Get-ChildItem -Path $env:TEMP -Filter "dd_*.log" -ErrorAction SilentlyContinue |
+      Sort-Object LastWriteTime -Descending |
+      Select-Object -First 3 |
+      ForEach-Object {
+        Write-Host "---- installer log:" $_.FullName "----"
+        Get-Content -Path $_.FullName -Tail 80 -ErrorAction SilentlyContinue
+      }
+    throw @"
+VS Build Tools install failed with exit code $($proc.ExitCode)
+Common causes (offline --noWeb):
+  - layout missing packages for selected workloads/components
+  - Windows SDK / MFC component id not in this layoutRelease
+  - wrong layout folder for VS 2019 vs 2022
+Check IMAGE_FACTORY_LAYOUT_ROOT=$layoutRoot and profile.vsconfig components.
+"@
   }
-  Write-Host "VS Build Tools install completed"
+  Write-Host "VS Build Tools install completed (exit $($proc.ExitCode))"
 }
 
 foreach ($sdk in @($manifest.dotnetSdks)) {

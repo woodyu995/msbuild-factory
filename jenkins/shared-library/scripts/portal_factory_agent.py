@@ -407,9 +407,28 @@ def cmd_build(args: argparse.Namespace) -> None:
                 }
             )
         )
-        built = subprocess.run(build_cmd, check=False, capture_output=True, text=True, env=env)
+        # Stream docker build so VS installer errors are visible; also keep a log file.
+        log_path = work / "docker-build.log"
+        print(json.dumps({"ok": True, "phase": "docker-build-log", "path": str(log_path)}))
+        with log_path.open("w", encoding="utf-8", errors="replace") as log_f:
+            built = subprocess.run(
+                build_cmd,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                env=env,
+            )
+            out = built.stdout or ""
+            log_f.write(out)
+            # Print last chunk to console (full log is in docker-build.log).
+            tail = out[-12000:] if len(out) > 12000 else out
+            if tail:
+                print(tail)
         if built.returncode != 0:
-            raise SystemExit(f"docker build failed: {built.stderr or built.stdout}")
+            raise SystemExit(
+                f"docker build failed (exit {built.returncode}); see {log_path}"
+            )
 
         # Promote staging -> final tag locally.
         subprocess.run(["docker", "tag", staging_tag, final_tag], check=True)
