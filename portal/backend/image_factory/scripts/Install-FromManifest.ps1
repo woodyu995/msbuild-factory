@@ -50,23 +50,37 @@ if ($env:FACTORY_SKIP_VS_INSTALL -eq "1") {
     ($vsconfigObj | ConvertTo-Json -Depth 8) | Set-Content -Path $config -Encoding UTF8
   }
 
-  # Server Core / offline: without roots + without CRL reachability, vs_installer.opc
-  # fails with exit 5003 InvalidCertificate even after a naive Import-Certificate.
-  $certDir = Join-Path $layoutRoot "certificates"
-  if (Test-Path $certDir) {
-    Write-Host "Importing offline layout certificates via certutil from" $certDir
-    Get-ChildItem -Path (Join-Path $certDir "*") -Include *.cer, *.crt -File -ErrorAction SilentlyContinue |
+  # Server Core / offline 5003: layout\certificates alone is NOT enough.
+  # Microsoft Windows Code Signing PCA 2024 is required and is NOT in the layout
+  # (see learn.microsoft.com install-failure missing certificate). We ship it under
+  # scripts\certs and also import layout certificates + disable CRL checks.
+  function Import-CertFiles([string]$dir) {
+    if (-not (Test-Path $dir)) { return 0 }
+    $n = 0
+    Get-ChildItem -Path $dir -File -ErrorAction SilentlyContinue |
+      Where-Object { $_.Extension -match '\.(cer|crt)$' } |
       ForEach-Object {
-        Write-Host "  certutil Root:" $_.Name
+        Write-Host "  certutil Root+CA:" $_.Name "from" $dir
         & certutil.exe -addstore -f "Root" $_.FullName | Out-Host
-        Write-Host "  certutil CA:" $_.Name
         & certutil.exe -addstore -f "CA" $_.FullName | Out-Host
+        $n++
       }
-  } else {
-    Write-Host "WARNING: no certificates folder under layout - offline install may fail with exit 5003"
+    return $n
   }
 
-  # Offline containers cannot reach Microsoft CRL/OCSP; disable revocation checks for setup.
+  Write-Host "SCRIPT_REV=pca2024-certs-20260721"
+  $imported = 0
+  $imported += Import-CertFiles (Join-Path $PSScriptRoot "certs")
+  $imported += Import-CertFiles "C:\ImageBuild\certs"
+  $imported += Import-CertFiles (Join-Path $layoutRoot "certificates")
+  $imported += Import-CertFiles (Join-Path $installerRoot "certs")
+  if ($imported -lt 1) {
+    Write-Host "WARNING: no .cer/.crt files imported - expect VS exit 5003"
+  } else {
+    Write-Host "Imported certificate file count:" $imported
+  }
+
+  # Offline containers cannot reach Microsoft CRL/OCSP.
   Write-Host "Disabling Authenticode revocation checks for offline VS setup"
   $softPubPaths = @(
     "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WinTrust\Trust Providers\Software Publishing",
@@ -76,7 +90,6 @@ if ($env:FACTORY_SKIP_VS_INSTALL -eq "1") {
     if (-not (Test-Path $p)) {
       New-Item -Path $p -Force | Out-Null
     }
-    # 0x23e00 = WTPF_IGNOREREVOKATION | WTPF_OFFLINEOKNOPERF | typical offline flags
     New-ItemProperty -Path $p -Name "State" -PropertyType DWord -Value 0x23e00 -Force | Out-Null
   }
   $authRoot = "HKLM:\SOFTWARE\Policies\Microsoft\SystemCertificates\AuthRoot"
@@ -85,6 +98,17 @@ if ($env:FACTORY_SKIP_VS_INSTALL -eq "1") {
   }
   New-ItemProperty -Path $authRoot -Name "DisableRootAutoUpdate" -PropertyType DWord -Value 1 -Force | Out-Null
   New-ItemProperty -Path $authRoot -Name "EnableDisallowedPublishersAutoUpdate" -PropertyType DWord -Value 0 -Force | Out-Null
+
+  foreach ($sigPath in @($setup, (Join-Path $layoutRoot "vs_installer.opc"))) {
+    if (Test-Path $sigPath) {
+      try {
+        $sig = Get-AuthenticodeSignature -FilePath $sigPath
+        Write-Host ("Authenticode {0}: Status={1} Signer={2}" -f $sigPath, $sig.Status, $sig.SignerCertificate.Subject)
+      } catch {
+        Write-Host "Authenticode check failed for" $sigPath ":" $_.Exception.Message
+      }
+    }
+  }
 
   Write-Host "Running" $setup
   Write-Host "vsconfig:"

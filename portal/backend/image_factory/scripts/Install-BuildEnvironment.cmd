@@ -9,7 +9,7 @@ set "INSTALLER_ROOT=%IMAGE_FACTORY_INSTALLER_ROOT%"
 set "MANIFEST=C:\ImageBuild\install-manifest.json"
 
 echo Install-BuildEnvironment starting
-echo SCRIPT_REV=certutil-crl-20260721
+echo SCRIPT_REV=pca2024-certs-20260721
 echo LAYOUT_ROOT=%LAYOUT_ROOT%
 echo INSTALLER_ROOT=%INSTALLER_ROOT%
 
