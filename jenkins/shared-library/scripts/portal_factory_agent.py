@@ -425,12 +425,11 @@ def cmd_build(args: argparse.Namespace) -> None:
                 check=False,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
+                encoding="utf-8",
+                errors="replace",
                 env=env,
             )
-            raw = built.stdout or b""
-            out = raw.decode("utf-8", errors="replace")
-            if out == "" and raw:
-                out = raw.decode("cp949", errors="replace")
+            out = built.stdout or ""
             log_f.write(out)
             # Print last chunk to console (full log is in docker-build.log).
             tail = out[-12000:] if len(out) > 12000 else out
