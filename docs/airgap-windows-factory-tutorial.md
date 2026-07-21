@@ -559,6 +559,8 @@ docker run --rm msbuild-local/profile:<tag> cmd /c where msbuild
 | `lease expired` | 양쪽 | 빌드가 lease TTL(~2h, airgap compose는 **12h**)보다 김. **Portal 이미지/compose 갱신** 후 Ensure(동일 조합)로 lease 연장, 또는 Windows에서 `heartbeat`/`finalize` 재시도(동일 leaseId + 상태가 아직 CREATING이면 soft-renew). reconcile로 FAILED가 됐으면 Ensure → **새 lease**로 finalize (`result.json` 있으면 빌드 재실행 불필요). 최신 agent는 build 중 10분마다 heartbeat |
 | `factory slots full` / `FACTORY_BUSY` | Linux UI | 동시 CREATING은 **1개**. 이전 Ensure가 아직 CREATING이면 다른 조합 Ensure가 거절됨. **같은 환경**으로 Ensure → `factoryLeaseId` 받아서 이어서 build/finalize. 포기하려면 Windows에서 `fail`로 슬롯 해제(아래). lease가 이미 만료됐으면 Portal이 Ensure 시 자동 reconcile |
 | Ensure 후에도 `leaseExpiresAt`이 과거 · leaseId 동일 | Linux | **구 Portal 이미지**일 가능성 큼. 아래 “만료 lease 즉시 복구” 또는 Portal 이미지 재빌드/재기동. 최신 Portal은 Ensure 시 만료 lease를 **새 leaseId**로 교체하고 TTL을 미래로 민다 |
+| VS install exit **5003** / `Certificate is invalid: …\vs_installer.opc` | Windows | Server Core에 루트 인증서 없음. layout의 `certificates\` 를 설치 전 import해야 함 — 최신 `Install-FromManifest.ps1`이 자동 처리. 수동: layout\certificates\*.cer 를 LocalMachine Root/CA에 설치 후 rebuild |
+| vsconfig에 `VC.MFC` | Windows | Build Tools는 **VC.ATLMFC** 필요. 최신 install 스크립트가 자동 remap. Portal catalog도 ATLMFC |
 | `result.json missing` | Windows | build가 실패한 것. build 성공 후에만 finalize |
 | `COPY failed: layout` / junction | Windows | 위와 동일 — embed 경로 사용 (에이전트 자동) |
 | `FROM` 실패 | Windows | `docker images msbuild-agent-base` |

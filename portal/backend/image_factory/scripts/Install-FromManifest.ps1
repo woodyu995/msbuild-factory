@@ -34,6 +34,44 @@ if ($env:FACTORY_SKIP_VS_INSTALL -eq "1") {
   $config = "C:\ImageBuild\profile.vsconfig"
   if (-not (Test-Path $config)) { throw ("Missing {0}" -f $config) }
 
+  # Build Tools SKU rejects VC.MFC (IDE-only); remap to ATLMFC for older Portal manifests.
+  $vsconfigObj = Get-Content -Raw -Path $config | ConvertFrom-Json
+  if ($vsconfigObj.components) {
+    $fixed = @()
+    foreach ($c in @($vsconfigObj.components)) {
+      if ($c -eq "Microsoft.VisualStudio.Component.VC.MFC") {
+        Write-Host "Remapping VC.MFC -> VC.ATLMFC for Build Tools"
+        $fixed += "Microsoft.VisualStudio.Component.VC.ATLMFC"
+      } else {
+        $fixed += $c
+      }
+    }
+    $vsconfigObj.components = @($fixed | Select-Object -Unique)
+    ($vsconfigObj | ConvertTo-Json -Depth 8) | Set-Content -Path $config -Encoding UTF8
+  }
+
+  # Server Core / offline: import layout certificates or vs_installer.opc fails with 5003.
+  $certDir = Join-Path $layoutRoot "certificates"
+  if (Test-Path $certDir) {
+    Write-Host "Importing offline layout certificates from" $certDir
+    Get-ChildItem -Path $certDir -Include *.cer, *.crt -Recurse -ErrorAction SilentlyContinue |
+      ForEach-Object {
+        Write-Host "  cert:" $_.Name
+        try {
+          Import-Certificate -FilePath $_.FullName -CertStoreLocation "Cert:\LocalMachine\Root" | Out-Null
+        } catch {
+          Write-Host "  Root import warning:" $_.Exception.Message
+        }
+        try {
+          Import-Certificate -FilePath $_.FullName -CertStoreLocation "Cert:\LocalMachine\CA" | Out-Null
+        } catch {
+          Write-Host "  CA import warning:" $_.Exception.Message
+        }
+      }
+  } else {
+    Write-Host "WARNING: no certificates folder under layout - offline install may fail with exit 5003"
+  }
+
   Write-Host "Running" $setup
   Write-Host "vsconfig:"
   Get-Content -Raw -Path $config | Write-Host
