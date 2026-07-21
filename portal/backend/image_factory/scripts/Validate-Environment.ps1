@@ -20,7 +20,7 @@ if ($strict -eq "1") {
   ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 
   if (-not $vswhere) {
-    throw "vswhere.exe not found — VS Build Tools install likely failed"
+    throw "vswhere.exe not found - VS Build Tools install likely failed"
   }
 
   $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find MSBuild\**\Bin\MSBuild.exe |
