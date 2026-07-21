@@ -291,6 +291,7 @@ def ensure_image_endpoint(
                 "code": "FACTORY_BUSY",
                 "message": str(exc),
                 "retryable": True,
+                "blocking": getattr(exc, "blocking", []) or [],
             },
         ) from exc
     except ImageQuarantined as exc:

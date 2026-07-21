@@ -107,7 +107,19 @@ function detailMessage(data: unknown): string {
     const detail = (data as { detail: unknown }).detail;
     if (typeof detail === "string") return detail;
     if (detail && typeof detail === "object" && "message" in detail) {
-      return String((detail as { message: unknown }).message);
+      const d = detail as {
+        message: unknown;
+        code?: unknown;
+        blocking?: Array<{ profileHash?: string; leaseId?: string }>;
+      };
+      let msg = String(d.message);
+      if (d.code === "FACTORY_BUSY" && d.blocking?.length) {
+        const b = d.blocking[0];
+        msg += ` (blocking profile: ${b.profileHash || "?"}`;
+        if (b.leaseId) msg += `, lease: ${b.leaseId}`;
+        msg += ")";
+      }
+      return msg;
     }
     return JSON.stringify(detail);
   }
@@ -269,7 +281,9 @@ export default function App() {
       if (!resp.ok) {
         const msg = detailMessage(data);
         if (resp.status === 503) {
-          setError(`${msg} — Ensure를 다시 눌러 재시도하세요.`);
+          setError(
+            `${msg} — 진행 중인 CREATING을 finalize/fail 하거나, 같은 환경으로 Ensure하세요.`,
+          );
         } else {
           setError(msg);
         }

@@ -29,7 +29,14 @@ MAX_GLOBAL_CREATING = 1
 
 
 class FactoryBusy(Exception):
-    pass
+    def __init__(
+        self,
+        message: str = "factory slots full",
+        *,
+        blocking: list[dict[str, Any]] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.blocking = blocking or []
 
 
 def _lease_ttl_minutes(catalog: Catalog) -> int:
@@ -179,8 +186,31 @@ def start_or_join_factory(
     if existing and existing.status == "QUARANTINED":
         return existing, "QUARANTINED"
 
+    # Drop abandoned expired CREATING rows so a new cold profile can take the slot.
+    # (Same-profile join above soft-renews first, so an in-flight holder is kept.)
+    from app.services.reconcile import reconcile_expired_leases
+
+    reconcile_expired_leases(session)
+
     if count_creating(session) >= MAX_GLOBAL_CREATING:
-        raise FactoryBusy("factory slots full")
+        blockers = [
+            {
+                "profileHash": row.profile_hash,
+                "status": row.status,
+                "leaseId": row.lease_id,
+                "leaseExpiresAt": row.lease_expires_at.isoformat() if row.lease_expires_at else None,
+                "vsGeneration": row.vs_generation,
+                "windowsBase": row.windows_base,
+            }
+            for row in session.scalars(
+                select(BuildImage).where(BuildImage.status.in_(["CREATING", "VALIDATING"]))
+            ).all()
+        ]
+        raise FactoryBusy(
+            "factory slots full — another image is still CREATING; "
+            "finish/finalize it, or fail that lease to free the slot",
+            blocking=blockers,
+        )
 
     from app.config import get_settings
 
