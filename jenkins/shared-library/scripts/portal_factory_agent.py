@@ -416,6 +416,7 @@ def cmd_build(args: argparse.Namespace) -> None:
             )
         )
         # Stream docker build so VS installer errors are visible; also keep a log file.
+        # Windows docker/console often emits non-UTF8 bytes → never use bare text=True.
         log_path = work / "docker-build.log"
         print(json.dumps({"ok": True, "phase": "docker-build-log", "path": str(log_path)}))
         with log_path.open("w", encoding="utf-8", errors="replace") as log_f:
@@ -424,10 +425,12 @@ def cmd_build(args: argparse.Namespace) -> None:
                 check=False,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True,
                 env=env,
             )
-            out = built.stdout or ""
+            raw = built.stdout or b""
+            out = raw.decode("utf-8", errors="replace")
+            if out == "" and raw:
+                out = raw.decode("cp949", errors="replace")
             log_f.write(out)
             # Print last chunk to console (full log is in docker-build.log).
             tail = out[-12000:] if len(out) > 12000 else out
