@@ -92,13 +92,19 @@ def create_app(database_url: str | None = None, catalog_path: Path | None = None
             "registryHost": reg.host,
             "registryPushHost": reg.push_host,
             "registryFinal": reg.final_image,
+            # Air-gap operators: if leaseRearm is missing, the running image is too old.
+            "apiFeatures": ["leaseRearm", "ensureLeaseRefresh", "factoryLeaseMinutes"],
+            "factoryLeaseMinutes": settings.factory_lease_minutes,
         }
 
     @app.get("/readyz")
     def readyz():
         with app.state.session_factory() as session:
             session.execute(text("SELECT 1"))
-        return {"status": "ready"}
+        return {
+            "status": "ready",
+            "apiFeatures": ["leaseRearm", "ensureLeaseRefresh", "factoryLeaseMinutes"],
+        }
 
     # Optional static UI (baked into container image)
     static_dir = Path(__file__).resolve().parents[1] / "static"
