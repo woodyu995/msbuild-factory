@@ -387,6 +387,8 @@ def cmd_build(args: argparse.Namespace) -> None:
             "-t",
             staging_tag,
         ]
+        if _env_flag("FACTORY_DOCKER_BUILD_NO_CACHE"):
+            build_cmd.append("--no-cache")
         if use_build_context:
             build_cmd.extend(
                 [

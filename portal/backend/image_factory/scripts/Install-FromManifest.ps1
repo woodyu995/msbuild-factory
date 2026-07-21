@@ -56,16 +56,16 @@ if ($env:FACTORY_SKIP_VS_INSTALL -eq "1") {
   # scripts\certs and also import layout certificates + disable CRL checks.
   function Import-CertFiles([string]$dir) {
     if (-not (Test-Path $dir)) { return 0 }
-    $n = 0
-    Get-ChildItem -Path $dir -File -ErrorAction SilentlyContinue |
-      Where-Object { $_.Extension -match '\.(cer|crt)$' } |
-      ForEach-Object {
-        Write-Host "  certutil Root+CA:" $_.Name "from" $dir
-        & certutil.exe -addstore -f "Root" $_.FullName | Out-Host
-        & certutil.exe -addstore -f "CA" $_.FullName | Out-Host
-        $n++
-      }
-    return $n
+    $files = @(
+      Get-ChildItem -Path $dir -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Extension -match '\.(cer|crt)$' }
+    )
+    foreach ($f in $files) {
+      Write-Host "  certutil Root+CA:" $f.Name "from" $dir
+      & certutil.exe -addstore -f "Root" $f.FullName | Out-Host
+      & certutil.exe -addstore -f "CA" $f.FullName | Out-Host
+    }
+    return ,$files.Count
   }
 
   Write-Host "SCRIPT_REV=pca2024-certs-20260721"
