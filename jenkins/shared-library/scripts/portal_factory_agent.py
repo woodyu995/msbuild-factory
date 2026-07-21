@@ -21,6 +21,9 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+# Printed at startup — if logs lack this string, Windows is running a stale agent copy.
+AGENT_REV = "20260721-binlog-v3"
+
 
 class _HeartbeatKeeper:
     """Renew Portal factory lease while a long docker/robocopy build runs."""
@@ -159,17 +162,56 @@ def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").lower() in {"1", "true", "yes"}
 
 
-def _docker_supports_build_context() -> bool:
-    """True when `docker build` accepts named `--build-context` (BuildKit / recent Docker)."""
+def _run_capture(cmd: list[str], *, env: dict[str, str] | None = None, input_text: str | None = None) -> tuple[int, str]:
+    """Run a process and decode stdout/stderr without locale UnicodeDecodeError on Windows."""
     import subprocess
 
-    help_run = subprocess.run(
-        ["docker", "build", "--help"],
+    raw_in = None if input_text is None else input_text.encode("utf-8", errors="replace")
+    completed = subprocess.run(
+        cmd,
         check=False,
-        capture_output=True,
-        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        input=raw_in,
+        env=env,
     )
-    text = f"{help_run.stdout or ''}{help_run.stderr or ''}"
+    out = (completed.stdout or b"").decode("utf-8", errors="replace")
+    return completed.returncode, out
+
+
+def _run_docker_build_to_log(cmd: list[str], log_path: Path, *, env: dict[str, str]) -> int:
+    """Run docker build in binary mode, tee chunks to log file. Never uses text pipes."""
+    import subprocess
+
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("wb") as log_f:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
+        )
+        assert proc.stdout is not None
+        # Read binary chunks — avoids Windows locale decode crashes (cp949/cp1252).
+        while True:
+            chunk = proc.stdout.read(65536)
+            if not chunk:
+                break
+            log_f.write(chunk)
+            log_f.flush()
+            try:
+                sys.stdout.buffer.write(chunk)
+                sys.stdout.buffer.flush()
+            except Exception:
+                # Console may reject some bytes; log file still has everything.
+                pass
+        return int(proc.wait())
+
+
+def _docker_supports_build_context() -> bool:
+    """True when `docker build` accepts named `--build-context` (BuildKit / recent Docker)."""
+    code, text = _run_capture(["docker", "build", "--help"])
+    _ = code
     return "--build-context" in text
 
 
@@ -185,7 +227,6 @@ def _rm_tree(path: Path) -> None:
                 ["cmd", "/c", "rmdir", str(path)],
                 check=False,
                 capture_output=True,
-                text=True,
             )
         return
     if os.name == "nt":
@@ -194,7 +235,6 @@ def _rm_tree(path: Path) -> None:
             ["cmd", "/c", "rmdir", str(path)],
             check=False,
             capture_output=True,
-            text=True,
         )
         if removed.returncode == 0 or not path.exists():
             return
@@ -237,12 +277,13 @@ def _embed_dir_into_context(src: Path, dst: Path) -> None:
             ],
             check=False,
             capture_output=True,
-            text=True,
         )
         if copied.returncode >= 8:
+            err = (copied.stderr or copied.stdout or b"")
+            if isinstance(err, bytes):
+                err = err.decode("utf-8", errors="replace")
             raise SystemExit(
-                f"robocopy failed ({src} -> {dst}, code={copied.returncode}): "
-                f"{copied.stderr or copied.stdout}"
+                f"robocopy failed ({src} -> {dst}, code={copied.returncode}): {err}"
             )
         return
     shutil.copytree(src, dst)
@@ -415,30 +456,21 @@ def cmd_build(args: argparse.Namespace) -> None:
                 }
             )
         )
-        # Stream docker build so VS installer errors are visible; also keep a log file.
-        # Windows docker/console often emits non-UTF8 bytes → never use bare text=True.
+        # Binary pipe only — Windows cp949/cp1252 text mode crashes on docker ANSI output.
         log_path = work / "docker-build.log"
-        print(json.dumps({"ok": True, "phase": "docker-build-log", "path": str(log_path)}))
-        with log_path.open("w", encoding="utf-8", errors="replace") as log_f:
-            built = subprocess.run(
-                build_cmd,
-                check=False,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                encoding="utf-8",
-                errors="replace",
-                env=env,
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "phase": "docker-build-log",
+                    "path": str(log_path),
+                    "agentRev": AGENT_REV,
+                }
             )
-            out = built.stdout or ""
-            log_f.write(out)
-            # Print last chunk to console (full log is in docker-build.log).
-            tail = out[-12000:] if len(out) > 12000 else out
-            if tail:
-                print(tail)
-        if built.returncode != 0:
-            raise SystemExit(
-                f"docker build failed (exit {built.returncode}); see {log_path}"
-            )
+        )
+        rc = _run_docker_build_to_log(build_cmd, log_path, env=env)
+        if rc != 0:
+            raise SystemExit(f"docker build failed (exit {rc}); see {log_path}")
 
         # Promote staging -> final tag locally.
         subprocess.run(["docker", "tag", staging_tag, final_tag], check=True)
@@ -451,47 +483,38 @@ def cmd_build(args: argparse.Namespace) -> None:
                 out = Path(save_dir)
                 out.mkdir(parents=True, exist_ok=True)
                 local_tar = out / f'{arts["imageTag"]}.tar'
-                saved = subprocess.run(
-                    ["docker", "save", "-o", str(local_tar), final_tag],
-                    check=False,
-                    capture_output=True,
-                    text=True,
+                save_rc, save_out = _run_capture(
+                    ["docker", "save", "-o", str(local_tar), final_tag]
                 )
-                if saved.returncode != 0:
-                    raise SystemExit(f"docker save failed: {saved.stderr or saved.stdout}")
+                if save_rc != 0:
+                    raise SystemExit(f"docker save failed: {save_out}")
                 print(json.dumps({"ok": True, "phase": "docker-save", "tar": str(local_tar)}))
         else:
             nexus_user = os.environ.get("NEXUS_DOCKER_USER") or os.environ.get("REGISTRY_USER")
             nexus_pass = os.environ.get("NEXUS_DOCKER_PASSWORD") or os.environ.get("REGISTRY_PASSWORD")
             registry_host = (arts.get("registryHost") or os.environ.get("NEXUS_REGISTRY_HOST") or "").strip()
             if nexus_user and nexus_pass and registry_host:
-                login = subprocess.run(
+                login_rc, login_out = _run_capture(
                     ["docker", "login", registry_host, "-u", nexus_user, "--password-stdin"],
-                    input=nexus_pass,
-                    check=False,
-                    capture_output=True,
-                    text=True,
+                    input_text=nexus_pass,
                 )
-                if login.returncode != 0:
-                    raise SystemExit(f"docker login to Nexus failed: {login.stderr or login.stdout}")
+                if login_rc != 0:
+                    raise SystemExit(f"docker login to Nexus failed: {login_out}")
 
             if _env_flag("FACTORY_PUSH_STAGING"):
                 subprocess.run(["docker", "push", staging_tag], check=False)
-            push = subprocess.run(["docker", "push", final_tag], check=False, capture_output=True, text=True)
-            if push.returncode != 0:
-                raise SystemExit(f"docker push to Nexus failed: {push.stderr or push.stdout}")
+            push_rc, push_out = _run_capture(["docker", "push", final_tag])
+            if push_rc != 0:
+                raise SystemExit(f"docker push to Nexus failed: {push_out}")
 
         digest = ""
         if not skip_push:
-            inspect = subprocess.run(
-                ["docker", "image", "inspect", "--format", "{{json .RepoDigests}}", final_tag],
-                check=False,
-                capture_output=True,
-                text=True,
+            inspect_rc, inspect_out = _run_capture(
+                ["docker", "image", "inspect", "--format", "{{json .RepoDigests}}", final_tag]
             )
-            if inspect.returncode == 0 and inspect.stdout.strip():
+            if inspect_rc == 0 and inspect_out.strip():
                 try:
-                    digests = json.loads(inspect.stdout)
+                    digests = json.loads(inspect_out)
                     for entry in digests or []:
                         if "@sha256:" in entry:
                             digest = "sha256:" + entry.split("@sha256:", 1)[1].strip()
@@ -499,13 +522,12 @@ def cmd_build(args: argparse.Namespace) -> None:
                 except json.JSONDecodeError:
                     digest = ""
         if not digest:
-            inspect2 = subprocess.run(
-                ["docker", "image", "inspect", "--format", "{{.Id}}", final_tag],
-                check=True,
-                capture_output=True,
-                text=True,
+            inspect2_rc, inspect2_out = _run_capture(
+                ["docker", "image", "inspect", "--format", "{{.Id}}", final_tag]
             )
-            digest = inspect2.stdout.strip()
+            if inspect2_rc != 0:
+                raise SystemExit(f"docker image inspect failed: {inspect2_out}")
+            digest = inspect2_out.strip()
             if not digest.startswith("sha256:"):
                 digest = f"sha256:{digest}"
 
@@ -658,6 +680,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    print(json.dumps({"ok": True, "phase": "agent-start", "agentRev": AGENT_REV, "argv0": sys.argv[0]}))
     parser = build_parser()
     args = parser.parse_args(argv)
     commands = {
