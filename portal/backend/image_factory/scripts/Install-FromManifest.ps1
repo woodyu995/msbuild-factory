@@ -16,26 +16,23 @@ Write-Host "Components:" ($manifest.visualStudio.components -join ", ")
 
 # Allow base images that already contain Build Tools (verify / incremental).
 if ($env:FACTORY_SKIP_VS_INSTALL -eq "1") {
-  Write-Host "FACTORY_SKIP_VS_INSTALL=1 — skipping vs_setup.exe"
+  Write-Host "FACTORY_SKIP_VS_INSTALL=1 - skipping vs_setup.exe"
 } else {
   $setupCandidates = @(
     (Join-Path $layoutRoot "vs_setup.exe"),
     (Join-Path $layoutRoot "vs_BuildTools.exe"),
-    (Join-Path $layoutRoot $release "vs_setup.exe"),
-    (Join-Path $layoutRoot $release "vs_BuildTools.exe")
+    (Join-Path $layoutRoot (Join-Path $release "vs_setup.exe")),
+    (Join-Path $layoutRoot (Join-Path $release "vs_BuildTools.exe"))
   )
   $setup = $setupCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
   if (-not $setup) {
-    throw @"
-vs_setup.exe / vs_BuildTools.exe not found under IMAGE_FACTORY_LAYOUT_ROOT=$layoutRoot
-Expected one of:
-  $layoutRoot\vs_setup.exe
-  $layoutRoot\$release\vs_setup.exe
-"@
+    $expected1 = Join-Path $layoutRoot "vs_setup.exe"
+    $expected2 = Join-Path $layoutRoot (Join-Path $release "vs_setup.exe")
+    throw ("vs_setup.exe / vs_BuildTools.exe not found under IMAGE_FACTORY_LAYOUT_ROOT={0}. Expected one of: {1} ; {2}" -f $layoutRoot, $expected1, $expected2)
   }
 
   $config = "C:\ImageBuild\profile.vsconfig"
-  if (-not (Test-Path $config)) { throw "Missing $config" }
+  if (-not (Test-Path $config)) { throw ("Missing {0}" -f $config) }
 
   Write-Host "Running" $setup
   Write-Host "vsconfig:"
@@ -57,34 +54,21 @@ Expected one of:
   ) -Wait -PassThru
   if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010) {
     Write-Host "VS installer exit code:" $proc.ExitCode
-    $logs = @(
-      (Join-Path $env:TEMP "dd_setup_*.log"),
-      (Join-Path $env:TEMP "dd_bootstrapper_*.log"),
-      (Join-Path $env:TEMP "dd_client_*.log")
-    )
     Get-ChildItem -Path $env:TEMP -Filter "dd_*.log" -ErrorAction SilentlyContinue |
       Sort-Object LastWriteTime -Descending |
       Select-Object -First 3 |
       ForEach-Object {
-        Write-Host "---- installer log:" $_.FullName "----"
+        Write-Host ("---- installer log: {0} ----" -f $_.FullName)
         Get-Content -Path $_.FullName -Tail 80 -ErrorAction SilentlyContinue
       }
-    throw @"
-VS Build Tools install failed with exit code $($proc.ExitCode)
-Common causes (offline --noWeb):
-  - layout missing packages for selected workloads/components
-  - Windows SDK / MFC component id not in this layoutRelease
-  - wrong layout folder for VS 2019 vs 2022
-Check IMAGE_FACTORY_LAYOUT_ROOT=$layoutRoot and profile.vsconfig components.
-"@
+    throw ("VS Build Tools install failed with exit code {0}. Offline --noWeb needs all selected components in the layout under {1}. Check profile.vsconfig." -f $proc.ExitCode, $layoutRoot)
   }
-  Write-Host "VS Build Tools install completed (exit $($proc.ExitCode))"
+  Write-Host ("VS Build Tools install completed (exit {0})" -f $proc.ExitCode)
 }
 
 foreach ($sdk in @($manifest.dotnetSdks)) {
   $ver = [string]$sdk.version
   Write-Host "Looking for .NET SDK installer version" $ver
-  $pattern = Join-Path $installerRoot ("*" + $ver + "*.exe")
   $sdkSetup = Get-ChildItem -Path $installerRoot -Filter "*.exe" -ErrorAction SilentlyContinue |
     Where-Object { $_.Name -match [regex]::Escape($ver) } |
     Select-Object -First 1
@@ -92,7 +76,7 @@ foreach ($sdk in @($manifest.dotnetSdks)) {
     Write-Host "Installing" $sdkSetup.FullName
     $p = Start-Process -FilePath $sdkSetup.FullName -ArgumentList "/install","/quiet","/norestart" -Wait -PassThru
     if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) {
-      throw ".NET SDK install failed: $($p.ExitCode)"
+      throw (".NET SDK install failed: {0}" -f $p.ExitCode)
     }
   } else {
     Write-Host "No matching .NET SDK installer under" $installerRoot "(skipped)"

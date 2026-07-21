@@ -1,8 +1,7 @@
-# escape=`
-# Shared Install script skeleton for Image Factory Windows hosts.
-# Offline Layout / installers are supplied via RO mount paths from Catalog.
-
 @echo off
+REM Shared Install script for Image Factory Windows hosts.
+REM Offline Layout / installers are supplied via IMAGE_FACTORY_* env paths.
+
 setlocal EnableExtensions
 
 set "LAYOUT_ROOT=%IMAGE_FACTORY_LAYOUT_ROOT%"
