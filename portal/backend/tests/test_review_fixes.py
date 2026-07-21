@@ -25,7 +25,8 @@ def _client(tmp_path, **env):
     return TestClient(app)
 
 
-def test_expired_lease_status_callback_rejected(tmp_path):
+def test_expired_lease_same_holder_can_finalize(tmp_path):
+    """Wall-clock TTL may lapse during long VS builds; matching CREATING lease soft-renews."""
     with _client(tmp_path) as client:
         ensured = client.post(
             "/api/v1/images/ensure",
@@ -52,7 +53,61 @@ def test_expired_lease_status_callback_rejected(tmp_path):
         body = {
             "status": "FAILED",
             "leaseId": lease_id,
-            "message": "too late",
+            "message": "factory gave up after long build",
+        }
+        raw = json.dumps(body).encode()
+        ts = str(int(time.time()))
+        sig = sign_body("dev-callback-secret-change-me", ts, raw)
+        resp = client.post(
+            f"/internal/v1/images/{profile_hash}/status",
+            content=raw,
+            headers={"Content-Type": "application/json", "X-Timestamp": ts, "X-Signature": sig},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "FAILED"
+
+
+def test_reconciled_cleared_lease_still_rejected(tmp_path):
+    with _client(tmp_path) as client:
+        ensured = client.post(
+            "/api/v1/images/ensure",
+            json={
+                "environment": {
+                    "visualStudio": "2022",
+                    "dotnetFrameworks": ["4.8"],
+                    "dotnetSdks": [],
+                    "cppToolsets": ["v143"],
+                    "windowsSdks": ["10.0.22621.0"],
+                    "features": ["managed-desktop", "mfc"],
+                    "reuseMode": "exactReuse",
+                },
+            },
+        ).json()
+        profile_hash = ensured["matchedProfileHash"]
+        session = client.app.state.session_factory()
+        image = session.query(BuildImage).filter_by(profile_hash=profile_hash).one()
+        old_lease = image.lease_id
+        image.status = "FAILED"
+        image.lease_id = None
+        image.lease_owner = None
+        image.lease_expires_at = None
+        session.commit()
+        session.close()
+
+        body = {
+            "status": "READY",
+            "leaseId": old_lease,
+            "imageDigest": "sha256:deadbeef",
+            "capabilityProfile": {
+                "visualStudio": "2022",
+                "dotnetFrameworks": ["4.8"],
+                "dotnetSdks": [],
+                "cppToolsets": ["v143"],
+                "windowsSdks": ["10.0.22621.0"],
+                "features": ["mfc"],
+                "windowsBase": "ltsc2022",
+                "customSdks": [],
+            },
         }
         raw = json.dumps(body).encode()
         ts = str(int(time.time()))

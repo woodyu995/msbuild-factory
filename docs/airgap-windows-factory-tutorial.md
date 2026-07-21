@@ -512,6 +512,7 @@ docker run --rm msbuild-local/profile:<tag> cmd /c where msbuild
 | Ensure 후 바로 READY + tar 없음 | Linux | stub compose 쓰는지 확인 → **airgap-windows** 로 교체 |
 | CREATING 고정 | Windows | fetch/build/finalize 실행 여부 |
 | `unknown flag: --build-context` | Windows | Docker가 구버전. **최신 `portal_factory_agent.py`** 로 교체 후 build 재실행 — 자동으로 layout을 work 디렉터리에 robocopy (수십 GB·시간 소요). 강제: `$env:FACTORY_EMBED_LAYOUT_IN_CONTEXT=1` |
+| `lease expired` | 양쪽 | 빌드가 lease TTL(~2h, airgap compose는 **12h**)보다 김. **Portal 이미지/compose 갱신** 후 Ensure(동일 조합)로 lease 연장, 또는 Windows에서 `heartbeat`/`finalize` 재시도(동일 leaseId + 상태가 아직 CREATING이면 soft-renew). reconcile로 FAILED가 됐으면 Ensure → **새 lease**로 finalize (`result.json` 있으면 빌드 재실행 불필요). 최신 agent는 build 중 10분마다 heartbeat |
 | `result.json missing` | Windows | build가 실패한 것. build 성공 후에만 finalize |
 | `COPY failed: layout` / junction | Windows | 위와 동일 — embed 경로 사용 (에이전트 자동) |
 | `FROM` 실패 | Windows | `docker images msbuild-agent-base` |

@@ -13,12 +13,56 @@ import hmac
 import json
 import os
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
+
+
+class _HeartbeatKeeper:
+    """Renew Portal factory lease while a long docker/robocopy build runs."""
+
+    def __init__(self, args: argparse.Namespace, *, interval_sec: int | None = None) -> None:
+        raw = os.environ.get("FACTORY_HEARTBEAT_INTERVAL_SEC", "").strip()
+        if interval_sec is not None:
+            self.interval_sec = max(30, interval_sec)
+        elif raw:
+            self.interval_sec = max(30, int(raw))
+        else:
+            self.interval_sec = 600
+        self.args = args
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def __enter__(self) -> _HeartbeatKeeper:
+        try:
+            cmd_heartbeat(self.args)
+        except SystemExit as exc:
+            print(json.dumps({"ok": False, "phase": "heartbeat", "error": str(exc)}))
+        self._thread = threading.Thread(target=self._loop, name="factory-heartbeat", daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
+        try:
+            cmd_heartbeat(self.args)
+        except SystemExit:
+            pass
+
+    def _loop(self) -> None:
+        while not self._stop.wait(self.interval_sec):
+            try:
+                cmd_heartbeat(self.args)
+            except SystemExit as exc:
+                print(json.dumps({"ok": False, "phase": "heartbeat", "error": str(exc)}))
+            except Exception as exc:  # noqa: BLE001 — keep build alive if Portal blips
+                print(json.dumps({"ok": False, "phase": "heartbeat", "error": str(exc)}))
 
 
 def _sign(secret: str, timestamp: str, body: bytes) -> str:
@@ -238,9 +282,9 @@ def cmd_build(args: argparse.Namespace) -> None:
     dry_run = args.dry_run or _env_flag("FACTORY_DRY_RUN")
 
     cmd_event(args, "IMAGE_BUILDING", "Factory build started")
-    cmd_heartbeat(args)
 
     if dry_run:
+        cmd_heartbeat(args)
         digest = f"sha256:dry-run-{args.profile_hash[:24]}"
         capability = _capability_from_manifest(arts["installManifest"])
         (work / "result.json").write_text(
@@ -273,197 +317,199 @@ def cmd_build(args: argparse.Namespace) -> None:
             "IMAGE_FACTORY_LAYOUT_ROOT and IMAGE_FACTORY_INSTALLER_ROOT are required for real builds"
         )
 
-    # Copy shared install scripts into build context if present beside this repo layout.
-    scripts_src = Path(__file__).resolve().parents[3] / "portal" / "backend" / "image_factory" / "scripts"
-    scripts_dst = work / "scripts"
-    if scripts_src.exists() and not scripts_dst.exists():
-        shutil.copytree(scripts_src, scripts_dst)
+    # Heartbeat for the whole embed + docker build window (can be many hours).
+    with _HeartbeatKeeper(args):
+        # Copy shared install scripts into build context if present beside this repo layout.
+        scripts_src = Path(__file__).resolve().parents[3] / "portal" / "backend" / "image_factory" / "scripts"
+        scripts_dst = work / "scripts"
+        if scripts_src.exists() and not scripts_dst.exists():
+            shutil.copytree(scripts_src, scripts_dst)
 
-    layout_release = str(
-        (arts.get("installManifest") or {}).get("visualStudio", {}).get("layoutRelease") or ""
-    )
-    layout_src = _resolve_layout_dir(layout_root, layout_release)
-    if not layout_src.exists():
-        raise SystemExit(f"layout path missing: {layout_src}")
+        layout_release = str(
+            (arts.get("installManifest") or {}).get("visualStudio", {}).get("layoutRelease") or ""
+        )
+        layout_src = _resolve_layout_dir(layout_root, layout_release)
+        if not layout_src.exists():
+            raise SystemExit(f"layout path missing: {layout_src}")
 
-    installer_src = Path(installer_root)
-    if not installer_src.exists():
-        installer_src.mkdir(parents=True, exist_ok=True)
-        (installer_src / ".keep").write_text("", encoding="utf-8")
+        installer_src = Path(installer_root)
+        if not installer_src.exists():
+            installer_src.mkdir(parents=True, exist_ok=True)
+            (installer_src / ".keep").write_text("", encoding="utf-8")
 
-    # Prefer Docker named build-contexts when the daemon supports them. Older
-    # Windows Docker rejects `--build-context`; then fully embed layout/installers
-    # into the work dir (junctions are invisible to Windows docker build).
-    force_embed = _env_flag("FACTORY_EMBED_LAYOUT_IN_CONTEXT")
-    supports_build_context = _docker_supports_build_context()
-    use_build_context = supports_build_context and not force_embed
-    if not use_build_context:
+        # Prefer Docker named build-contexts when the daemon supports them. Older
+        # Windows Docker rejects `--build-context`; then fully embed layout/installers
+        # into the work dir (junctions are invisible to Windows docker build).
+        force_embed = _env_flag("FACTORY_EMBED_LAYOUT_IN_CONTEXT")
+        supports_build_context = _docker_supports_build_context()
+        use_build_context = supports_build_context and not force_embed
+        if not use_build_context:
+            print(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "phase": "embed-layout",
+                        "reason": (
+                            "FACTORY_EMBED_LAYOUT_IN_CONTEXT"
+                            if force_embed
+                            else "docker-build lacks --build-context"
+                        ),
+                        "layoutSrc": str(layout_src),
+                        "installerSrc": str(installer_src),
+                        "note": "Full copy into work dir — may take a long time for VS layouts",
+                    }
+                )
+            )
+            _embed_dir_into_context(layout_src, work / "layout")
+            _embed_dir_into_context(installer_src, work / "installers")
+
+        staging_tag = f'{arts["stagingRepository"]}:{arts["imageTag"]}'
+        final_tag = f'{arts["finalRepository"]}:{arts["imageTag"]}'
+        dockerfile = work / "Dockerfile"
+
+        df_text = _rewrite_dockerfile_copy_mode(
+            dockerfile.read_text(encoding="utf-8"),
+            use_build_context=use_build_context,
+        )
+        dockerfile.write_text(df_text, encoding="utf-8")
+
+        build_cmd = [
+            "docker",
+            "build",
+            "-f",
+            str(dockerfile),
+            "-t",
+            staging_tag,
+        ]
+        if use_build_context:
+            build_cmd.extend(
+                [
+                    "--build-context",
+                    f"layout={layout_src}",
+                    "--build-context",
+                    f"installers={installer_src}",
+                ]
+            )
+        build_cmd.append(str(work))
+        env = os.environ.copy()
+        env["IMAGE_FACTORY_LAYOUT_ROOT"] = str(layout_src)
+        env["IMAGE_FACTORY_INSTALLER_ROOT"] = str(installer_src)
+
         print(
             json.dumps(
                 {
                     "ok": True,
-                    "phase": "embed-layout",
-                    "reason": (
-                        "FACTORY_EMBED_LAYOUT_IN_CONTEXT"
-                        if force_embed
-                        else "docker-build lacks --build-context"
-                    ),
+                    "phase": "docker-build",
+                    "cmd": build_cmd,
                     "layoutSrc": str(layout_src),
-                    "installerSrc": str(installer_src),
-                    "note": "Full copy into work dir — may take a long time for VS layouts",
+                    "supportsBuildContext": supports_build_context,
+                    "useBuildContext": use_build_context,
                 }
             )
         )
-        _embed_dir_into_context(layout_src, work / "layout")
-        _embed_dir_into_context(installer_src, work / "installers")
+        built = subprocess.run(build_cmd, check=False, capture_output=True, text=True, env=env)
+        if built.returncode != 0:
+            raise SystemExit(f"docker build failed: {built.stderr or built.stdout}")
 
-    staging_tag = f'{arts["stagingRepository"]}:{arts["imageTag"]}'
-    final_tag = f'{arts["finalRepository"]}:{arts["imageTag"]}'
-    dockerfile = work / "Dockerfile"
+        # Promote staging -> final tag locally.
+        subprocess.run(["docker", "tag", staging_tag, final_tag], check=True)
 
-    df_text = _rewrite_dockerfile_copy_mode(
-        dockerfile.read_text(encoding="utf-8"),
-        use_build_context=use_build_context,
-    )
-    dockerfile.write_text(df_text, encoding="utf-8")
+        skip_push = _env_flag("FACTORY_SKIP_PUSH")
+        local_tar = None
+        if skip_push:
+            save_dir = os.environ.get("FACTORY_DOCKER_SAVE_DIR", "").strip()
+            if save_dir:
+                out = Path(save_dir)
+                out.mkdir(parents=True, exist_ok=True)
+                local_tar = out / f'{arts["imageTag"]}.tar'
+                saved = subprocess.run(
+                    ["docker", "save", "-o", str(local_tar), final_tag],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                if saved.returncode != 0:
+                    raise SystemExit(f"docker save failed: {saved.stderr or saved.stdout}")
+                print(json.dumps({"ok": True, "phase": "docker-save", "tar": str(local_tar)}))
+        else:
+            nexus_user = os.environ.get("NEXUS_DOCKER_USER") or os.environ.get("REGISTRY_USER")
+            nexus_pass = os.environ.get("NEXUS_DOCKER_PASSWORD") or os.environ.get("REGISTRY_PASSWORD")
+            registry_host = (arts.get("registryHost") or os.environ.get("NEXUS_REGISTRY_HOST") or "").strip()
+            if nexus_user and nexus_pass and registry_host:
+                login = subprocess.run(
+                    ["docker", "login", registry_host, "-u", nexus_user, "--password-stdin"],
+                    input=nexus_pass,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                if login.returncode != 0:
+                    raise SystemExit(f"docker login to Nexus failed: {login.stderr or login.stdout}")
 
-    build_cmd = [
-        "docker",
-        "build",
-        "-f",
-        str(dockerfile),
-        "-t",
-        staging_tag,
-    ]
-    if use_build_context:
-        build_cmd.extend(
-            [
-                "--build-context",
-                f"layout={layout_src}",
-                "--build-context",
-                f"installers={installer_src}",
-            ]
-        )
-    build_cmd.append(str(work))
-    env = os.environ.copy()
-    env["IMAGE_FACTORY_LAYOUT_ROOT"] = str(layout_src)
-    env["IMAGE_FACTORY_INSTALLER_ROOT"] = str(installer_src)
+            if _env_flag("FACTORY_PUSH_STAGING"):
+                subprocess.run(["docker", "push", staging_tag], check=False)
+            push = subprocess.run(["docker", "push", final_tag], check=False, capture_output=True, text=True)
+            if push.returncode != 0:
+                raise SystemExit(f"docker push to Nexus failed: {push.stderr or push.stdout}")
 
-    print(
-        json.dumps(
-            {
-                "ok": True,
-                "phase": "docker-build",
-                "cmd": build_cmd,
-                "layoutSrc": str(layout_src),
-                "supportsBuildContext": supports_build_context,
-                "useBuildContext": use_build_context,
-            }
-        )
-    )
-    built = subprocess.run(build_cmd, check=False, capture_output=True, text=True, env=env)
-    if built.returncode != 0:
-        raise SystemExit(f"docker build failed: {built.stderr or built.stdout}")
-
-    # Promote staging -> final tag locally.
-    subprocess.run(["docker", "tag", staging_tag, final_tag], check=True)
-
-    skip_push = _env_flag("FACTORY_SKIP_PUSH")
-    local_tar = None
-    if skip_push:
-        save_dir = os.environ.get("FACTORY_DOCKER_SAVE_DIR", "").strip()
-        if save_dir:
-            out = Path(save_dir)
-            out.mkdir(parents=True, exist_ok=True)
-            local_tar = out / f'{arts["imageTag"]}.tar'
-            saved = subprocess.run(
-                ["docker", "save", "-o", str(local_tar), final_tag],
+        digest = ""
+        if not skip_push:
+            inspect = subprocess.run(
+                ["docker", "image", "inspect", "--format", "{{json .RepoDigests}}", final_tag],
                 check=False,
                 capture_output=True,
                 text=True,
             )
-            if saved.returncode != 0:
-                raise SystemExit(f"docker save failed: {saved.stderr or saved.stdout}")
-            print(json.dumps({"ok": True, "phase": "docker-save", "tar": str(local_tar)}))
-    else:
-        nexus_user = os.environ.get("NEXUS_DOCKER_USER") or os.environ.get("REGISTRY_USER")
-        nexus_pass = os.environ.get("NEXUS_DOCKER_PASSWORD") or os.environ.get("REGISTRY_PASSWORD")
-        registry_host = (arts.get("registryHost") or os.environ.get("NEXUS_REGISTRY_HOST") or "").strip()
-        if nexus_user and nexus_pass and registry_host:
-            login = subprocess.run(
-                ["docker", "login", registry_host, "-u", nexus_user, "--password-stdin"],
-                input=nexus_pass,
-                check=False,
+            if inspect.returncode == 0 and inspect.stdout.strip():
+                try:
+                    digests = json.loads(inspect.stdout)
+                    for entry in digests or []:
+                        if "@sha256:" in entry:
+                            digest = "sha256:" + entry.split("@sha256:", 1)[1].strip()
+                            break
+                except json.JSONDecodeError:
+                    digest = ""
+        if not digest:
+            inspect2 = subprocess.run(
+                ["docker", "image", "inspect", "--format", "{{.Id}}", final_tag],
+                check=True,
                 capture_output=True,
                 text=True,
             )
-            if login.returncode != 0:
-                raise SystemExit(f"docker login to Nexus failed: {login.stderr or login.stdout}")
+            digest = inspect2.stdout.strip()
+            if not digest.startswith("sha256:"):
+                digest = f"sha256:{digest}"
 
-        if _env_flag("FACTORY_PUSH_STAGING"):
-            subprocess.run(["docker", "push", staging_tag], check=False)
-        push = subprocess.run(["docker", "push", final_tag], check=False, capture_output=True, text=True)
-        if push.returncode != 0:
-            raise SystemExit(f"docker push to Nexus failed: {push.stderr or push.stdout}")
-
-    digest = ""
-    if not skip_push:
-        inspect = subprocess.run(
-            ["docker", "image", "inspect", "--format", "{{json .RepoDigests}}", final_tag],
-            check=False,
-            capture_output=True,
-            text=True,
+        capability = _capability_from_manifest(arts["installManifest"])
+        (work / "result.json").write_text(
+            json.dumps(
+                {
+                    "dryRun": False,
+                    "skipPush": skip_push,
+                    "imageDigest": digest,
+                    "capabilityProfile": capability,
+                    "stagingRepository": arts.get("stagingRepository"),
+                    "finalRepository": arts.get("finalRepository"),
+                    "imageTag": arts.get("imageTag"),
+                    "finalTag": final_tag,
+                    "localTar": str(local_tar) if local_tar else None,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
         )
-        if inspect.returncode == 0 and inspect.stdout.strip():
-            try:
-                digests = json.loads(inspect.stdout)
-                for entry in digests or []:
-                    if "@sha256:" in entry:
-                        digest = "sha256:" + entry.split("@sha256:", 1)[1].strip()
-                        break
-            except json.JSONDecodeError:
-                digest = ""
-    if not digest:
-        inspect2 = subprocess.run(
-            ["docker", "image", "inspect", "--format", "{{.Id}}", final_tag],
-            check=True,
-            capture_output=True,
-            text=True,
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "dryRun": False,
+                    "skipPush": skip_push,
+                    "imageDigest": digest,
+                    "finalTag": final_tag,
+                    "localTar": str(local_tar) if local_tar else None,
+                }
+            )
         )
-        digest = inspect2.stdout.strip()
-        if not digest.startswith("sha256:"):
-            digest = f"sha256:{digest}"
-
-    capability = _capability_from_manifest(arts["installManifest"])
-    (work / "result.json").write_text(
-        json.dumps(
-            {
-                "dryRun": False,
-                "skipPush": skip_push,
-                "imageDigest": digest,
-                "capabilityProfile": capability,
-                "stagingRepository": arts.get("stagingRepository"),
-                "finalRepository": arts.get("finalRepository"),
-                "imageTag": arts.get("imageTag"),
-                "finalTag": final_tag,
-                "localTar": str(local_tar) if local_tar else None,
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    print(
-        json.dumps(
-            {
-                "ok": True,
-                "dryRun": False,
-                "skipPush": skip_push,
-                "imageDigest": digest,
-                "finalTag": final_tag,
-                "localTar": str(local_tar) if local_tar else None,
-            }
-        )
-    )
 
 
 def _netfx_logical_version(resolved_version: str) -> str:

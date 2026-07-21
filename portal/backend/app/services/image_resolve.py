@@ -126,19 +126,15 @@ def apply_image_status_callback(
 ) -> tuple[BuildImage, list[str]]:
     from app.services.factory import get_active_image
 
+    from app.services.factory import reclaim_or_require_lease
+
     row = get_active_image(session, profile_hash, for_update=True)
     if row is None:
         raise LookupError("image not found")
-    # Lease CAS: mutating callbacks require an active, unexpired lease that matches exactly.
-    if not row.lease_id or lease_id != row.lease_id:
-        raise PermissionError("stale or missing leaseId")
+    # Lease CAS: matching lease while CREATING/VALIDATING; wall-clock expiry is soft-renewed
+    # so long air-gap factory builds can still finalize after the initial TTL.
+    reclaim_or_require_lease(row, lease_id, extend=True)
     now = utcnow()
-    expires = row.lease_expires_at
-    if expires is not None:
-        if expires.tzinfo is None:
-            expires = expires.replace(tzinfo=timezone.utc)
-        if expires <= now:
-            raise PermissionError("lease expired")
     row.updated_at = now
     affected: list[str] = []
 

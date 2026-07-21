@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     default_actor_roles: str = "builder"
     # None = follow catalog.mvpFactoryEnabled; True/False overrides
     factory_enabled: bool | None = None
+    # Floor for new CREATING leases (minutes). Air-gap compose sets 720.
     factory_lease_minutes: int = 135
     # Local/dev: auto-simulate factory + project build after queueing
     simulate_workers: bool = False
